@@ -1,0 +1,36 @@
+{
+  "rewrites": [
+    {
+      "source": "/custom-portfolio",
+      "destination": "https://custom-portfolio-omega.vercel.app/"
+    },
+    {
+      "source": "/custom-portfolio/:path*",
+      "destination": "https://custom-portfolio-omega.vercel.app/:path*"
+    },
+    {
+      "source": "/portfolio-dashboard",
+      "destination": "https://vite-react-psi-weld-82.vercel.app/"
+    },
+    {
+      "source": "/portfolio-dashboard/:path*",
+      "destination": "https://vite-react-psi-weld-82.vercel.app/:path*"
+    },
+    {
+      "source": "/fund-dashboard",
+      "destination": "https://fund-dashboard-coral.vercel.app/fund-dashboard/"
+    },
+    {
+      "source": "/fund-dashboard/:path*",
+      "destination": "https://fund-dashboard-coral.vercel.app/fund-dashboard/:path*"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/((?!api/|.*\\..*).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
