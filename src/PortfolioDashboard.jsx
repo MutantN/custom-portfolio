@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useState, useCallback, useMemo, useRef } from "react";
+import { solveDeterministicPortfolioSet } from "./lib/qpOptimizer.js";
 
 const EfficientFrontierChart = lazy(() => import("./EfficientFrontierChart.jsx"));
 
@@ -576,152 +577,8 @@ function optimizeWithData(mu, cov, rf, iter=8000, minVarVolCap = 0.2) {
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += (a[i] || 0) * (b[i] || 0);
-  return s;
-}
-
-function matVec(m, v) {
-  return m.map((row) => dot(row, v));
-}
-
-function projectToSimplex(values) {
-  const n = values.length;
-  const sorted = [...values].sort((a, b) => b - a);
-  let sum = 0;
-  let rho = -1;
-  for (let i = 0; i < n; i++) {
-    sum += sorted[i];
-    const theta = (sum - 1) / (i + 1);
-    if (sorted[i] - theta > 0) rho = i;
-  }
-  const theta = rho >= 0
-    ? (sorted.slice(0, rho + 1).reduce((acc, v) => acc + v, 0) - 1) / (rho + 1)
-    : 0;
-  return values.map((v) => Math.max(v - theta, 0));
-}
-
-function optimizeProjected(initial, gradientFn, objectiveFn, { maximize = false, iterations = 450, initialStep = 0.12 } = {}) {
-  let w = projectToSimplex(initial);
-  let bestW = [...w];
-  let bestObj = objectiveFn(w);
-  let step = initialStep;
-
-  for (let iter = 0; iter < iterations; iter++) {
-    const grad = gradientFn(w);
-    const signed = maximize ? 1 : -1;
-    const candidate = projectToSimplex(w.map((v, i) => v + signed * step * (grad[i] || 0)));
-    const candidateObj = objectiveFn(candidate);
-    const improved = maximize ? candidateObj > bestObj : candidateObj < bestObj;
-
-    if (improved) {
-      w = candidate;
-      bestW = candidate;
-      bestObj = candidateObj;
-      step = Math.min(step * 1.08, 0.35);
-    } else {
-      step *= 0.5;
-      if (step < 1e-6) break;
-    }
-  }
-
-  return { weights: bestW, objective: bestObj };
-}
-
 function deterministicOptimize(mu, cov, rf, minVarVolCap = 0.2) {
-  const n = mu.length;
-  const equal = Array.from({ length: n }, () => 1 / n);
-  const vols = cov.map((row, i) => Math.sqrt(Math.max(Number(row?.[i]) || 0, 1e-8)));
-  const invVol = projectToSimplex(vols.map((v) => 1 / Math.max(v, 1e-6)));
-  const bestMuIdx = mu.reduce((best, v, i, arr) => (v > arr[best] ? i : best), 0);
-  const bestMuStart = Array.from({ length: n }, (_, i) => (i === bestMuIdx ? 1 : 0));
-  const starts = [equal, invVol, bestMuStart];
-
-  const varianceObjective = (w) => {
-    const covW = matVec(cov, w);
-    return dot(w, covW);
-  };
-  const varianceGradient = (w) => {
-    const covW = matVec(cov, w);
-    return covW.map((v) => 2 * v);
-  };
-
-  let minVarWeights = equal;
-  let minVarObj = varianceObjective(equal);
-  for (const start of starts) {
-    const solved = optimizeProjected(start, varianceGradient, varianceObjective, {
-      maximize: false,
-      iterations: 700,
-      initialStep: 0.18,
-    });
-    if (solved.objective < minVarObj) {
-      minVarObj = solved.objective;
-      minVarWeights = solved.weights;
-    }
-  }
-
-  const sharpeObjective = (w) => portStats(w, mu, cov, rf).sharpe;
-  const sharpeGradient = (w) => {
-    const covW = matVec(cov, w);
-    const excessRet = dot(w, mu) - rf;
-    const variance = Math.max(dot(w, covW), 1e-8);
-    const vol = Math.sqrt(variance);
-    const volCubed = Math.max(vol * vol * vol, 1e-8);
-    return mu.map((m, i) => (m / vol) - (excessRet * covW[i] / volCubed));
-  };
-
-  let maxSharpeWeights = equal;
-  let maxSharpeObj = sharpeObjective(equal);
-  for (const start of starts) {
-    const solved = optimizeProjected(start, sharpeGradient, sharpeObjective, {
-      maximize: true,
-      iterations: 900,
-      initialStep: 0.1,
-    });
-    if (solved.objective > maxSharpeObj) {
-      maxSharpeObj = solved.objective;
-      maxSharpeWeights = solved.weights;
-    }
-  }
-
-  const cappedSharpeObjective = (w) => {
-    const stats = portStats(w, mu, cov, rf);
-    const excessVol = Math.max(0, stats.vol - minVarVolCap);
-    return stats.sharpe - (250 * excessVol * excessVol);
-  };
-  const cappedSharpeGradient = (w) => {
-    const stats = portStats(w, mu, cov, rf);
-    const covW = matVec(cov, w);
-    const variance = Math.max(dot(w, covW), 1e-8);
-    const vol = Math.sqrt(variance);
-    const volCubed = Math.max(vol * vol * vol, 1e-8);
-    const excessRet = dot(w, mu) - rf;
-    const sharpeGrad = mu.map((m, i) => (m / vol) - (excessRet * covW[i] / volCubed));
-    const excessVol = Math.max(0, stats.vol - minVarVolCap);
-    if (excessVol <= 0) return sharpeGrad;
-    return sharpeGrad.map((g, i) => g - (500 * excessVol * covW[i] / Math.max(vol, 1e-8)));
-  };
-
-  let cappedWeights = minVarWeights;
-  let cappedObj = cappedSharpeObjective(minVarWeights);
-  for (const start of [...starts, minVarWeights, maxSharpeWeights]) {
-    const solved = optimizeProjected(start, cappedSharpeGradient, cappedSharpeObjective, {
-      maximize: true,
-      iterations: 900,
-      initialStep: 0.08,
-    });
-    if (solved.objective > cappedObj) {
-      cappedObj = solved.objective;
-      cappedWeights = solved.weights;
-    }
-  }
-
-  return {
-    minVar: { method: "Projected gradient (long-only simplex)", ...portStats(minVarWeights, mu, cov, rf), weights: minVarWeights },
-    minVarSharpeCap: { method: "Projected gradient with volatility-cap penalty", ...portStats(cappedWeights, mu, cov, rf), weights: cappedWeights, volCap: minVarVolCap },
-    maxSharpe: { method: "Projected gradient (long-only simplex)", ...portStats(maxSharpeWeights, mu, cov, rf), weights: maxSharpeWeights },
-  };
+  return solveDeterministicPortfolioSet(mu, cov, minVarVolCap, rf);
 }
 
 async function buildModeledExpectedReturns(tickers, histMu, signal) {
@@ -1222,10 +1079,10 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
     { term: "Portfolio Expected Return", formula: <>R<sub>p</sub> = w<sup>T</sup>μ = Σ w<sub>i</sub>μ<sub>i</sub></>, meaning: "Weight vector times annualized expected return vector." },
     { term: "Portfolio Volatility", formula: <>σ<sub>p</sub> = √(w<sup>T</sup>Σw)</>, meaning: "Quadratic form of weights and covariance matrix." },
     { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: `Risk-adjusted expected return; dashboard currently uses R_f = ${(rfRate * 100).toFixed(1)}%.` },
-    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe Monte Carlo portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%.` },
-    { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility portfolio across all Monte Carlo random long-only weights." },
-    { term: "Max Sharpe Portfolio", formula: <>w* = argmax<sub>w</sub> Sharpe</>, meaning: "Best Sharpe portfolio among Monte Carlo random long-only weights." },
-    { term: "Deterministic Search Engine", formula: <>w* = ProjectedGradient(μ, Σ, R<sub>f</sub>)</>, meaning: `Current deterministic mode uses projected-gradient optimization on the long-only simplex, not quadratic programming. Active engine: ${engineMode}.` },
+    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo approximates it with random weights; deterministic mode selects it from a QP-built frontier on the user tickers.` },
+    { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility long-only portfolio. Monte Carlo approximates it over random weights; deterministic mode solves it directly with quadratic programming." },
+    { term: "Max Sharpe Portfolio", formula: <>w* = argmax<sub>w</sub> Sharpe</>, meaning: "Highest Sharpe long-only portfolio on the entered tickers. Monte Carlo approximates it with random weights; deterministic mode selects it from the efficient frontier." },
+    { term: "Deterministic Search Engine", formula: <>w* = QP(μ, Σ, R<sub>f</sub>)</>, meaning: `Current deterministic mode solves a long-only quadratic program directly on the user-entered ticker set, with covariance regularization and efficient-frontier selection. Active engine: ${engineMode}.` },
     { term: `Historical VaR (${varHorizonText})`, formula: <>min<sub>s</sub> [exp(Σ<sub>k=s</sub><sup>s+11</sup> r<sub>p,k</sub>) - 1]</>, meaning: "Worst realized rolling 12-month return from historical portfolio returns r_p,k." },
     { term: `Parametric VaR (${varHorizonText})`, formula: <>VaR = exp(μ<sub>annual</sub> + z<sub>p</sub>σ<sub>annual</sub>) - 1, p=1/N</>, meaning: "Normal-approx annual left-tail quantile from portfolio log-return mean and volatility." },
     { term: "Upside %", formula: <>((Target / Price) - 1) × 100</>, meaning: "Implied move from live price to analyst target." },
@@ -1259,10 +1116,10 @@ function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, mi
     { title: "Data Source Split", body: "Optimization uses Yahoo historical prices; live analysis table uses Finnhub + FMP. These are separate pipelines." },
     { title: "History Window", body: `Requested lookback is ${histYrs} year${histYrs > 1 ? "s" : ""}, then reduced to overlapping months common to all tickers before stats are computed.` },
     { title: "Return Construction", body: `Return model is selectable (current: ${returnModel}). Historical uses annualized mean monthly log returns. Modeled uses Finnhub/FMP target-implied log return blended with historical means by analyst-count confidence. Covariance always remains historical.` },
-    { title: "Engine Mode", body: `Current engine selection is ${engineMode}. Monte Carlo uses ${numSims.toLocaleString()} random long-only portfolios. Deterministic uses projected-gradient search on the simplex.` },
-    { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%; among eligible simulations, the highest Sharpe is selected.` },
-    { title: "Deterministic Search", body: "The deterministic engine is a projected-gradient long-only solver. It is not a quadratic-programming solver or quadratic search implementation." },
-    { title: "Portfolio Variants", body: "Monte Carlo mode shows Max Sharpe, True Min Variance, and Min Variance by Sharpe-under-cap. Deterministic mode shows Min Variance and Max Sharpe from the projected-gradient solver." },
+    { title: "Engine Mode", body: `Current engine selection is ${engineMode}. Monte Carlo uses ${numSims.toLocaleString()} random long-only portfolios on the fixed user ticker list. Deterministic mode solves the same fixed user ticker list directly with quadratic programming, without subset sampling.` },
+    { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo keeps the highest-Sharpe eligible simulation; deterministic mode keeps the highest-Sharpe eligible efficient-frontier point.` },
+    { title: "Deterministic Search", body: "The deterministic engine is a quadratic-programming and efficient-frontier solver with covariance regularization. It is not a projected-gradient search anymore." },
+    { title: "Portfolio Variants", body: "Both engines surface Best Min Variance (by Sharpe), True Min Variance, and Best Max Sharpe on the same user-specified ticker set." },
     { title: "VaR Method", body: `VaR method is selectable (current: ${varMethod}). Historical VaR uses worst realized rolling 12-month outcomes. Parametric VaR uses a normal annual left-tail quantile with p = 1/N-year.` },
     { title: "Sharpe Inputs", body: `Sharpe uses a user-specified risk-free rate (current: ${(rfRate * 100).toFixed(1)}%). Changing it can change rankings even if mu/cov are unchanged.` },
     { title: "Model Limits", body: "No shorting, no leverage, no transaction costs, no rebalance schedule, and no regime-switching model." },
@@ -1418,7 +1275,7 @@ export default function PortfolioDashboard() {
       }
       setOptMsg(engineMode === "monteCarlo"
         ? `Inputs ready. Running ${numSims.toLocaleString()} Monte Carlo simulations...`
-        : "Inputs ready. Running deterministic projected-gradient search...");
+        : "Inputs ready. Solving deterministic QP portfolios on the selected tickers...");
 
       await new Promise(r => setTimeout(r, 30));
 
@@ -1439,7 +1296,7 @@ export default function PortfolioDashboard() {
           detTrueMinVar: deterministic.minVar,
           maxSharpe: deterministic.maxSharpe,
           deterministic,
-          frontier: [],
+          frontier: deterministic.frontier,
           varAnalysis: {
             minVar: varFn(stats.assetReturns, deterministic.minVarSharpeCap.weights, histYrs),
             detTrueMinVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
@@ -1502,7 +1359,7 @@ export default function PortfolioDashboard() {
         <div style={{marginBottom:28,display:"flex",alignItems:"flex-end",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
           <div>
             <div style={{fontSize:14,fontWeight:700,color:"#f59e0b",letterSpacing:3.5,textTransform:"uppercase",marginBottom:3}}>Portfolio Lab</div>
-            <h1 style={{fontSize:26,fontWeight:800,margin:0,background:"linear-gradient(135deg,#f8fafc,#94a3b8)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Monte Carlo Portfolio Optimizer</h1>
+            <h1 style={{fontSize:26,fontWeight:800,margin:0,background:"linear-gradient(135deg,#f8fafc,#94a3b8)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Portfolio Optimizer</h1>
             <p style={{color:"#475569",fontSize:14,margin:"4px 0 0"}}>Live analyst data via API &middot; Historical prices from Yahoo Finance &middot; Local return/vol/correlation computation</p>
           </div>
           <div style={{fontFamily:MO,fontSize:13,color:"#475569",textAlign:"right"}}>
@@ -1514,7 +1371,7 @@ export default function PortfolioDashboard() {
 
         <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.08)",borderRadius:16,padding:22,marginBottom:22}}>
           <h2 style={{fontSize:15,fontWeight:700,margin:"0 0 4px",color:"#f1f5f9"}}>Add Stocks</h2>
-          <p style={{fontSize:13,color:"#64748b",margin:"0 0 14px"}}>Add tickers below. Click <strong style={{color:"#818cf8"}}>Optimize</strong> to download historical prices from Yahoo Finance and run Monte Carlo. Click <strong style={{color:"#818cf8"}}>Fetch Live Data</strong> for Finnhub prices + FMP target, rating, upside and R/R fields.</p>
+          <p style={{fontSize:13,color:"#64748b",margin:"0 0 14px"}}>Add tickers below. Click <strong style={{color:"#818cf8"}}>Optimize</strong> to download historical prices from Yahoo Finance and run the selected search engine on your ticker list. Click <strong style={{color:"#818cf8"}}>Fetch Live Data</strong> for Finnhub prices + FMP target, rating, upside and R/R fields.</p>
 
           <div style={{display:"flex",gap:8,marginBottom:14}}>
             <input type="text" placeholder="Any ticker: AAPL, NVDA, TTD, SHEL.L, 7203.T..." value={input}
@@ -1577,8 +1434,9 @@ export default function PortfolioDashboard() {
               </label>
               <input type="range" min={100} max={5000} step={100} value={numSims}
                 onChange={e=>setNumSims(parseInt(e.target.value))}
-                style={{width:"100%",accentColor:"#818cf8"}} disabled={busy}/>
+                style={{width:"100%",accentColor:"#818cf8"}} disabled={busy || engineMode === "deterministic"}/>
               <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#475569",marginTop:2}}><span>100</span><span>2500</span><span>5000</span></div>
+              <div style={{fontSize:12,color:"#64748b",marginTop:5}}>{engineMode === "monteCarlo" ? "Random long-only portfolios tested on the user ticker set." : "Monte Carlo only. Deterministic mode solves the entered tickers directly without simulation sampling."}</div>
             </div>
           </div>
 
@@ -1604,7 +1462,7 @@ export default function PortfolioDashboard() {
                 />
                 <span style={{fontSize:13,color:"#94a3b8",fontWeight:700}}>%</span>
               </div>
-              <div style={{fontSize:12,color:"#64748b",marginTop:5}}>Hard cap used by Monte Carlo min-variance-by-Sharpe selection. Range 5.0% to 40.0%.</div>
+              <div style={{fontSize:12,color:"#64748b",marginTop:5}}>Hard cap used by both engines for Best Min Variance (by Sharpe). Range 5.0% to 40.0%.</div>
             </div>
             <div>
               <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
@@ -1640,7 +1498,7 @@ export default function PortfolioDashboard() {
             <div style={{fontSize:12,color:"#64748b",marginTop:5}}>
               {engineMode === "monteCarlo"
                 ? "Uses random long-only portfolio search and supports the efficient frontier chart."
-                : "Uses projected-gradient optimization on the long-only simplex. This is not quadratic programming."}
+                : "Uses direct long-only quadratic programming on the fixed user ticker set, with efficient-frontier selection and covariance regularization."}
             </div>
           </div>
 
@@ -1785,7 +1643,7 @@ export default function PortfolioDashboard() {
             {[
               ...(isDeterministicMode
                 ? [
-                    { title:"Deterministic Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Deterministic Sharpe with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%` },
+                    { title:"Deterministic Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Highest Sharpe frontier portfolio with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%` },
                     { title:"Deterministic True Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.detTrueMinVar, varData:detTrueMinVarVaR },
                     { title:"Deterministic Max Sharpe", bg:"linear-gradient(135deg,#fefce8,#fde68a)", border:"#fcd34d", metricColor:"#ca8a04", p:res.maxSharpe, varData:maxSharpeVaR }
                   ]
@@ -1828,7 +1686,7 @@ export default function PortfolioDashboard() {
 
           <div style={{fontSize:11,color:"#64748b",marginBottom:20}}>
             {isDeterministicMode
-              ? "Deterministic mode uses projected-gradient long-only optimization. It is not a quadratic-programming solver. The Min Variance (by Sharpe) variant is implemented as a capped-Sharpe objective with a volatility-cap penalty."
+              ? "Deterministic mode uses direct long-only quadratic programming on the fixed user ticker set. Best Min Variance (by Sharpe) is selected from efficient-frontier points that satisfy the volatility cap."
               : "Note: \"Best Min Variance (by Sharpe)\" is the highest-Sharpe portfolio that satisfies the volatility cap. \"True Min Variance\" is the absolute lowest-volatility portfolio."}
           </div>
 
@@ -1851,7 +1709,7 @@ export default function PortfolioDashboard() {
                   <div style={{fontFamily:MO,fontSize:13,color:"#166534"}}>{fN(res.minVar.sharpe)} Sharpe</div>
                 </div>
                 <div style={{background:"linear-gradient(135deg,#eff6ff,#dbeafe)",border:"1px solid #bfdbfe",borderRadius:14,padding:"14px 16px"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#1d4ed8",marginBottom:6}}>Deterministic Min Variance</div>
+                  <div style={{fontSize:12,fontWeight:700,color:"#1d4ed8",marginBottom:6}}>Deterministic True Min Variance</div>
                   <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fmt(res.deterministic.minVar.ret)} return</div>
                   <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fmt(res.deterministic.minVar.vol)} vol</div>
                   <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fN(res.deterministic.minVar.sharpe)} Sharpe</div>
@@ -1924,7 +1782,7 @@ export default function PortfolioDashboard() {
           <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:16,padding:"36px 24px",textAlign:"center"}}>
             <div style={{fontSize:36,marginBottom:10,opacity:.3}}>\uD83D\uDCCA</div>
             <h3 style={{fontSize:16,fontWeight:700,color:"#94a3b8",margin:"0 0 4px"}}>{tickers.length} stocks ready</h3>
-            <p style={{fontSize:14,color:"#475569",margin:0}}>Click Optimize to download {histYrs}yr price history from Yahoo Finance &amp; run {numSims.toLocaleString()} simulations. No API key needed for optimization.</p>
+            <p style={{fontSize:14,color:"#475569",margin:0}}>Click Optimize to download {histYrs}yr price history from Yahoo Finance and run the selected engine on your tickers. No API key needed for optimization.</p>
           </div>)}
       </div>
     </div>
