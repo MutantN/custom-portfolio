@@ -530,12 +530,11 @@ async function fetchHistoricalStats(tickers, years, _apiKey, signal) {
    MONTE CARLO — uses historical mu/cov only (no synthetic fallback)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const RF = 0.04;
 class RNG{constructor(s){this.s=s;}next(){this.s=(this.s*1103515245+12345)&0x7fffffff;return this.s/0x7fffffff;}}
-function portStats(w,mu,cov){const ret=w.reduce((s,wi,i)=>s+wi*mu[i],0);let v=0;for(let i=0;i<w.length;i++)for(let j=0;j<w.length;j++)v+=w[i]*w[j]*cov[i][j];const vol=Math.sqrt(Math.max(v,1e-6));return{ret,vol,sharpe:(ret-RF)/vol};}
+function portStats(w,mu,cov,rf){const ret=w.reduce((s,wi,i)=>s+wi*mu[i],0);let v=0;for(let i=0;i<w.length;i++)for(let j=0;j<w.length;j++)v+=w[i]*w[j]*cov[i][j];const vol=Math.sqrt(Math.max(v,1e-6));return{ret,vol,sharpe:(ret-rf)/vol};}
 function randWeights(n,g){const w=Array.from({length:n},()=>g.next());const s=w.reduce((a,b)=>a+b,0);return w.map(v=>v/s);}
 
-function optimizeWithData(mu, cov, iter=8000) {
+function optimizeWithData(mu, cov, rf, iter=8000, minVarVolCap = 0.2) {
   const n = mu.length;
   const seed = mu.reduce((s,v,i) => s + Math.abs(v) * 1000 * (i+1), 42);
   const g = new RNG(seed + 1);
@@ -544,7 +543,7 @@ function optimizeWithData(mu, cov, iter=8000) {
   const fr = [], allSh = [], allMVR = [], allMSR = [];
   for (let i = 0; i < iter; i++) {
     const w = randWeights(n, g);
-    const s = portStats(w, mu, cov);
+    const s = portStats(w, mu, cov, rf);
     const p = { simNumber: i + 1, weights: [...w], ...s };
     allPorts.push(p);
 
@@ -558,9 +557,8 @@ function optimizeWithData(mu, cov, iter=8000) {
     if (i % 10 === 0) fr.push({ x: +(s.vol * 100).toFixed(3), y: +(s.ret * 100).toFixed(3) });
   }
 
-  const bandCount = Math.max(10, Math.ceil(iter * 0.1));
-  const lowVolBand = [...allPorts].sort((a, b) => a.vol - b.vol).slice(0, bandCount);
-  const bMV = lowVolBand.reduce((best, p) => (p.sharpe > best.sharpe ? p : best), lowVolBand[0] || trueMV);
+  const cappedPorts = allPorts.filter((p) => p.vol <= minVarVolCap);
+  const bMV = cappedPorts.reduce((best, p) => (p.sharpe > best.sharpe ? p : best), cappedPorts[0] || trueMV);
 
   const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
   return {
@@ -571,11 +569,127 @@ function optimizeWithData(mu, cov, iter=8000) {
     avgMSR: avg(allMSR),
     avgMVR: avg(allMVR),
     avgSh: avg(allSh),
-    minVarBandCount: bandCount
+    minVarCap: minVarVolCap,
+    minVarEligibleCount: cappedPorts.length
   };
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function dot(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += (a[i] || 0) * (b[i] || 0);
+  return s;
+}
+
+function matVec(m, v) {
+  return m.map((row) => dot(row, v));
+}
+
+function projectToSimplex(values) {
+  const n = values.length;
+  const sorted = [...values].sort((a, b) => b - a);
+  let sum = 0;
+  let rho = -1;
+  for (let i = 0; i < n; i++) {
+    sum += sorted[i];
+    const theta = (sum - 1) / (i + 1);
+    if (sorted[i] - theta > 0) rho = i;
+  }
+  const theta = rho >= 0
+    ? (sorted.slice(0, rho + 1).reduce((acc, v) => acc + v, 0) - 1) / (rho + 1)
+    : 0;
+  return values.map((v) => Math.max(v - theta, 0));
+}
+
+function optimizeProjected(initial, gradientFn, objectiveFn, { maximize = false, iterations = 450, initialStep = 0.12 } = {}) {
+  let w = projectToSimplex(initial);
+  let bestW = [...w];
+  let bestObj = objectiveFn(w);
+  let step = initialStep;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const grad = gradientFn(w);
+    const signed = maximize ? 1 : -1;
+    const candidate = projectToSimplex(w.map((v, i) => v + signed * step * (grad[i] || 0)));
+    const candidateObj = objectiveFn(candidate);
+    const improved = maximize ? candidateObj > bestObj : candidateObj < bestObj;
+
+    if (improved) {
+      w = candidate;
+      bestW = candidate;
+      bestObj = candidateObj;
+      step = Math.min(step * 1.08, 0.35);
+    } else {
+      step *= 0.5;
+      if (step < 1e-6) break;
+    }
+  }
+
+  return { weights: bestW, objective: bestObj };
+}
+
+function deterministicOptimize(mu, cov, rf) {
+  const n = mu.length;
+  const equal = Array.from({ length: n }, () => 1 / n);
+  const vols = cov.map((row, i) => Math.sqrt(Math.max(Number(row?.[i]) || 0, 1e-8)));
+  const invVol = projectToSimplex(vols.map((v) => 1 / Math.max(v, 1e-6)));
+  const bestMuIdx = mu.reduce((best, v, i, arr) => (v > arr[best] ? i : best), 0);
+  const bestMuStart = Array.from({ length: n }, (_, i) => (i === bestMuIdx ? 1 : 0));
+  const starts = [equal, invVol, bestMuStart];
+
+  const varianceObjective = (w) => {
+    const covW = matVec(cov, w);
+    return dot(w, covW);
+  };
+  const varianceGradient = (w) => {
+    const covW = matVec(cov, w);
+    return covW.map((v) => 2 * v);
+  };
+
+  let minVarWeights = equal;
+  let minVarObj = varianceObjective(equal);
+  for (const start of starts) {
+    const solved = optimizeProjected(start, varianceGradient, varianceObjective, {
+      maximize: false,
+      iterations: 700,
+      initialStep: 0.18,
+    });
+    if (solved.objective < minVarObj) {
+      minVarObj = solved.objective;
+      minVarWeights = solved.weights;
+    }
+  }
+
+  const sharpeObjective = (w) => portStats(w, mu, cov, rf).sharpe;
+  const sharpeGradient = (w) => {
+    const covW = matVec(cov, w);
+    const excessRet = dot(w, mu) - rf;
+    const variance = Math.max(dot(w, covW), 1e-8);
+    const vol = Math.sqrt(variance);
+    const volCubed = Math.max(vol * vol * vol, 1e-8);
+    return mu.map((m, i) => (m / vol) - (excessRet * covW[i] / volCubed));
+  };
+
+  let maxSharpeWeights = equal;
+  let maxSharpeObj = sharpeObjective(equal);
+  for (const start of starts) {
+    const solved = optimizeProjected(start, sharpeGradient, sharpeObjective, {
+      maximize: true,
+      iterations: 900,
+      initialStep: 0.1,
+    });
+    if (solved.objective > maxSharpeObj) {
+      maxSharpeObj = solved.objective;
+      maxSharpeWeights = solved.weights;
+    }
+  }
+
+  return {
+    minVar: { method: "Projected gradient (long-only simplex)", ...portStats(minVarWeights, mu, cov, rf), weights: minVarWeights },
+    maxSharpe: { method: "Projected gradient (long-only simplex)", ...portStats(maxSharpeWeights, mu, cov, rf), weights: maxSharpeWeights },
+  };
+}
 
 async function buildModeledExpectedReturns(tickers, histMu, signal) {
   const quotes = await fetchFinnhubBatchQuotes(tickers, signal);
@@ -1064,7 +1178,7 @@ function LiveAnalysisTable({ title, tickers, weights, stocks, liveData, accentCo
   );
 }
 
-function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod }) {
+function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVarVolCap, rfRate }) {
   const items = [
     { term: "Monthly Log Return (Asset i)", formula: <>r<sub>i,t</sub> = ln(P<sub>i,t</sub> / P<sub>i,t-1</sub>)</>, meaning: "Computed from aligned monthly adjusted-close prices." },
     { term: "Annualized Expected Return (Asset i)", formula: <>μ<sub>i</sub> = 12 · mean(r<sub>i,t</sub>)</>, meaning: "Historical monthly mean log-return annualized by 12." },
@@ -1074,8 +1188,8 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod }) {
     { term: "Correlation Matrix", formula: <>ρ<sub>ij</sub> = Cov(r<sub>i</sub>, r<sub>j</sub>) / (σ<sub>i</sub> · σ<sub>j</sub>)</>, meaning: "Normalized co-movement between assets, in [-1, 1]." },
     { term: "Portfolio Expected Return", formula: <>R<sub>p</sub> = w<sup>T</sup>μ = Σ w<sub>i</sub>μ<sub>i</sub></>, meaning: "Weight vector times annualized expected return vector." },
     { term: "Portfolio Volatility", formula: <>σ<sub>p</sub> = √(w<sup>T</sup>Σw)</>, meaning: "Quadratic form of weights and covariance matrix." },
-    { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: "Risk-adjusted expected return; dashboard uses R_f = 0.04." },
-    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w in LowVolBand</sub> Sharpe</>, meaning: "Highest Sharpe portfolio within the lowest-volatility simulation band." },
+    { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: `Risk-adjusted expected return; dashboard currently uses R_f = ${(rfRate * 100).toFixed(1)}%.` },
+    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%.` },
     { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility portfolio across all Monte Carlo random long-only weights." },
     { term: "Max Sharpe Portfolio", formula: <>w* = argmax<sub>w</sub> Sharpe</>, meaning: "Best Sharpe portfolio among Monte Carlo random long-only weights." },
     { term: `Historical VaR (${varHorizonText})`, formula: <>min<sub>s</sub> [exp(Σ<sub>k=s</sub><sup>s+11</sup> r<sub>p,k</sub>) - 1]</>, meaning: "Worst realized rolling 12-month return from historical portfolio returns r_p,k." },
@@ -1106,15 +1220,17 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod }) {
   );
 }
 
-function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod }) {
+function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, minVarVolCap, rfRate }) {
   const notes = [
     { title: "Data Source Split", body: "Optimization uses Yahoo historical prices; live analysis table uses Finnhub + FMP. These are separate pipelines." },
     { title: "History Window", body: `Requested lookback is ${histYrs} year${histYrs > 1 ? "s" : ""}, then reduced to overlapping months common to all tickers before stats are computed.` },
     { title: "Return Construction", body: `Return model is selectable (current: ${returnModel}). Historical uses annualized mean monthly log returns. Modeled uses Finnhub/FMP target-implied log return blended with historical means by analyst-count confidence. Covariance always remains historical.` },
     { title: "Monte Carlo Search", body: `The optimizer evaluates ${numSims.toLocaleString()} random long-only weight vectors (sum to 1) and keeps best candidates by objective.` },
-    { title: "Portfolio Variants", body: "Max Sharpe = highest Sharpe overall. True Min Variance = lowest volatility overall. Best Min Variance (by Sharpe) = highest Sharpe inside a lowest-volatility band." },
+    { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%; among eligible simulations, the highest Sharpe is selected.` },
+    { title: "Deterministic Search", body: "A projected-gradient long-only solver is also run on the same mu/cov inputs to produce deterministic min-variance and max-Sharpe portfolios for comparison." },
+    { title: "Portfolio Variants", body: "Max Sharpe = highest Sharpe overall. True Min Variance = lowest volatility overall. Best Min Variance (by Sharpe) = highest Sharpe that stays below the volatility cap." },
     { title: "VaR Method", body: `VaR method is selectable (current: ${varMethod}). Historical VaR uses worst realized rolling 12-month outcomes. Parametric VaR uses a normal annual left-tail quantile with p = 1/N-year.` },
-    { title: "Sharpe Inputs", body: "Sharpe uses RF = 4.0% from code; changing RF can change rankings even if mu/cov are unchanged." },
+    { title: "Sharpe Inputs", body: `Sharpe uses a user-specified risk-free rate (current: ${(rfRate * 100).toFixed(1)}%). Changing it can change rankings even if mu/cov are unchanged.` },
     { title: "Model Limits", body: "No shorting, no leverage, no transaction costs, no rebalance schedule, and no regime-switching model." },
   ];
 
@@ -1153,6 +1269,8 @@ export default function PortfolioDashboard() {
   const [histYrs, setHistYrs] = useState(3);
   const [returnModel, setReturnModel] = useState("historical");
   const [varMethod, setVarMethod] = useState("historical");
+  const [minVarVolCap, setMinVarVolCap] = useState(0.2);
+  const [rfRate, setRfRate] = useState(0.04);
 
   const [liveData, setLiveData] = useState({});
   const [fetching, setFetching] = useState(false);
@@ -1267,23 +1385,29 @@ export default function PortfolioDashboard() {
 
       await new Promise(r => setTimeout(r, 30));
 
-      const result = optimizeWithData(expectedMu, stats.cov, numSims);
+      const result = optimizeWithData(expectedMu, stats.cov, rfRate, numSims, minVarVolCap);
       const varFn = varMethod === "parametric" ? computeParametricVaR : computeOneInNYearWorstLoss;
+      const deterministic = deterministicOptimize(expectedMu, stats.cov, rfRate);
       result.varAnalysis = {
         minVar: varFn(stats.assetReturns, result.minVar.weights, histYrs),
         trueMinVar: varFn(stats.assetReturns, result.trueMinVar.weights, histYrs),
-        maxSharpe: varFn(stats.assetReturns, result.maxSharpe.weights, histYrs)
+        maxSharpe: varFn(stats.assetReturns, result.maxSharpe.weights, histYrs),
+        detMinVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
+        detMaxSharpe: varFn(stats.assetReturns, deterministic.maxSharpe.weights, histYrs)
       };
       result.dataSource = 'historical';
       result.histYrs = histYrs;
       result.returnModel = returnModel;
       result.varMethod = varMethod;
+      result.minVarVolCap = minVarVolCap;
+      result.rfRate = rfRate;
       result.modelCoverage = modelCoverage;
+      result.deterministic = deterministic;
 
       setRes(result);
       setBusy(false);
       setTab("maxSharpe");
-      setOptMsg(`Optimized using ${histYrs}yr historical prices (${stats.months} months), return=${returnModel}, VaR=${varMethod}`);
+      setOptMsg(`Optimized using ${histYrs}yr historical prices (${stats.months} months), return=${returnModel}, VaR=${varMethod}, RF=${(rfRate * 100).toFixed(1)}%, min-var cap=${(minVarVolCap * 100).toFixed(1)}%`);
     } catch (err) {
       console.error('Historical fetch failed:', err);
       setBusy(false);
@@ -1291,7 +1415,7 @@ export default function PortfolioDashboard() {
       setOptMsg(msg);
       setHistStats(null);
     }
-  }, [tickers, numSims, histYrs, returnModel, varMethod]);
+  }, [tickers, numSims, histYrs, returnModel, varMethod, minVarVolCap, rfRate]);
 
   const portfolioTab = tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe";
   const port = res ? (portfolioTab === "maxSharpe" ? res.maxSharpe : portfolioTab === "trueMinVar" ? res.trueMinVar : res.minVar) : null;
@@ -1300,6 +1424,8 @@ export default function PortfolioDashboard() {
   const minVarVaR = res?.varAnalysis?.minVar || null;
   const trueMinVarVaR = res?.varAnalysis?.trueMinVar || null;
   const maxSharpeVaR = res?.varAnalysis?.maxSharpe || null;
+  const detMinVarVaR = res?.varAnalysis?.detMinVar || null;
+  const detMaxSharpeVaR = res?.varAnalysis?.detMaxSharpe || null;
   const varYearsRaw = minVarVaR?.years ?? trueMinVarVaR?.years ?? maxSharpeVaR?.years ?? (histStats?.months ? histStats.months / 12 : null);
   const varYears = varYearsRaw != null ? Math.max(varYearsRaw, 1 / 12) : null;
   const varYearsLabel = varYears == null ? "N" : (Math.abs(varYears - Math.round(varYears)) < 0.05 ? String(Math.round(varYears)) : varYears.toFixed(1));
@@ -1325,7 +1451,7 @@ export default function PortfolioDashboard() {
           </div>
           <div style={{fontFamily:MO,fontSize:13,color:"#475569",textAlign:"right"}}>
             <div style={{fontWeight:600,color:"#f59e0b"}}>Author: Amadea Schaum</div>
-            <div>RF: {(RF*100).toFixed(1)}%</div>
+            <div>RF: {(rfRate*100).toFixed(1)}%</div>
           </div>
         </div>
 
@@ -1399,6 +1525,28 @@ export default function PortfolioDashboard() {
             </div>
           </div>
 
+          <div style={{marginBottom:16}}>
+            <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
+              <span>Min Variance Sharpe Vol Cap</span>
+              <span style={{fontFamily:MO,color:"#10b981",fontSize:13,fontWeight:700}}>{(minVarVolCap * 100).toFixed(1)}%</span>
+            </label>
+            <input type="range" min={5} max={40} step={0.5} value={minVarVolCap * 100}
+              onChange={e=>setMinVarVolCap(Number(e.target.value) / 100)}
+              style={{width:"100%",accentColor:"#10b981"}} disabled={busy}/>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#475569",marginTop:2}}><span>5%</span><span>22.5%</span><span>40%</span></div>
+          </div>
+
+          <div style={{marginBottom:16}}>
+            <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
+              <span>Risk-Free Rate</span>
+              <span style={{fontFamily:MO,color:"#f59e0b",fontSize:13,fontWeight:700}}>{(rfRate * 100).toFixed(1)}%</span>
+            </label>
+            <input type="range" min={0} max={10} step={0.1} value={rfRate * 100}
+              onChange={e=>setRfRate(Number(e.target.value) / 100)}
+              style={{width:"100%",accentColor:"#f59e0b"}} disabled={busy}/>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#475569",marginTop:2}}><span>0%</span><span>5%</span><span>10%</span></div>
+          </div>
+
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div>
               <label style={{display:"block",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>Return Model</label>
@@ -1460,7 +1608,8 @@ export default function PortfolioDashboard() {
               {`\u2713 ${res.histYrs}yr Real Historical Prices (Yahoo Finance)`}
             </div>
             {histStats && histStats.note && <span style={{fontSize:14,color:"#64748b"}}>{histStats.note}</span>}
-            <span style={{fontSize:13,color:"#64748b"}}>{`Return model: ${res.returnModel || "historical"} · VaR: ${res.varMethod || "historical"}`}</span>
+            <span style={{fontSize:13,color:"#64748b"}}>{`Return model: ${res.returnModel || "historical"} · VaR: ${res.varMethod || "historical"} · RF: ${((res.rfRate ?? rfRate) * 100).toFixed(1)}% · min-var cap: ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%`}</span>
+            {res.deterministic && <span style={{fontSize:13,color:"#64748b"}}>{`Deterministic engine: ${res.deterministic.minVar.method}`}</span>}
             {res.modelCoverage && (
               <span style={{fontSize:13,color:"#64748b"}}>{`Modeled coverage: ${res.modelCoverage.targetBased} target-based, ${res.modelCoverage.fallbackHistorical} historical fallback${res.modelCoverage.error ? " (fallback used)" : ""}`}</span>
             )}
@@ -1527,7 +1676,7 @@ export default function PortfolioDashboard() {
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:14,marginBottom:10}}>
             {[
-              { title:"Best Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Top Sharpe within lowest-${res.minVarBandCount} vol sims` },
+              { title:"Best Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Top Sharpe with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}% (${res.minVarEligibleCount} eligible sims)` },
               { title:"True Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#1d4ed8", p:res.trueMinVar, varData:trueMinVarVaR },
               { title:"Best Max Sharpe", bg:"linear-gradient(135deg,#fffbeb,#fed7aa)", border:"#fdba74", metricColor:"#b45309", p:res.maxSharpe, varData:maxSharpeVaR }
             ].map((card) => (
@@ -1539,6 +1688,7 @@ export default function PortfolioDashboard() {
                     #{Number.isFinite(card.p.simNumber) ? card.p.simNumber.toLocaleString() : "n/a"}
                   </span>
                 </div>
+                {card.note && <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>{card.note}</div>}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:10,textAlign:"center"}}>
                   <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
                     <div style={{fontSize:18,fontWeight:800,color:card.metricColor,fontFamily:MO}}>{fmt(card.p.ret)}</div>
@@ -1562,8 +1712,63 @@ export default function PortfolioDashboard() {
           </div>
 
           <div style={{fontSize:11,color:"#64748b",marginBottom:20}}>
-            Note: "Best Min Variance (by Sharpe)" is the highest-Sharpe portfolio within the minimum-volatility candidate band. "True Min Variance" is the absolute lowest-volatility portfolio.
+            Note: "Best Min Variance (by Sharpe)" is the highest-Sharpe portfolio that satisfies the volatility cap. "True Min Variance" is the absolute lowest-volatility portfolio.
           </div>
+
+          {res.deterministic && (
+            <>
+              <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
+                  <div>
+                    <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 4px"}}>Deterministic Optimizer</h3>
+                    <div style={{fontSize:12,color:"#64748b"}}>Long-only simplex search on the same historical inputs. Monte Carlo remains available above for stochastic comparison.</div>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:700,color:"#475569",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:999,padding:"5px 10px"}}>
+                    {res.deterministic.minVar.method}
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:14}}>
+                  {[
+                    { title:"Deterministic Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.deterministic.minVar, varData:detMinVarVaR },
+                    { title:"Deterministic Max Sharpe", bg:"linear-gradient(135deg,#fefce8,#fde68a)", border:"#fcd34d", metricColor:"#ca8a04", p:res.deterministic.maxSharpe, varData:detMaxSharpeVaR }
+                  ].map((card) => (
+                    <div key={card.title} style={{background:card.bg,borderRadius:16,padding:18,border:`1px solid ${card.border}`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                        <div style={{width:10,height:10,borderRadius:999,background:card.metricColor}} />
+                        <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{card.title}</h3>
+                        <span style={{fontSize:11,fontWeight:700,color:card.metricColor,background:"#fff",padding:"2px 8px",borderRadius:999,marginLeft:"auto"}}>
+                          deterministic
+                        </span>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:10,textAlign:"center"}}>
+                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
+                          <div style={{fontSize:18,fontWeight:800,color:card.metricColor,fontFamily:MO}}>{fmt(card.p.ret)}</div>
+                          <div style={{fontSize:11,color:"#64748b"}}>Return</div>
+                        </div>
+                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
+                          <div style={{fontSize:18,fontWeight:800,color:"#334155",fontFamily:MO}}>{fmt(card.p.vol)}</div>
+                          <div style={{fontSize:11,color:"#64748b"}}>Vol</div>
+                        </div>
+                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
+                          <div style={{fontSize:18,fontWeight:800,color:card.metricColor,fontFamily:MO}}>{fN(card.p.sharpe)}</div>
+                          <div style={{fontSize:11,color:"#64748b"}}>Sharpe</div>
+                        </div>
+                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
+                          <div style={{fontSize:18,fontWeight:800,color:"#be123c",fontFamily:MO}}>{fmt(card.varData?.worstLoss)}</div>
+                          <div style={{fontSize:11,color:"#64748b"}}>{`VaR ${res.varMethod === "parametric" ? "(Parametric)" : "(Historical)"} ${varHorizonText}`}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
+                <LiveAnalysisTable title="Deterministic Min Variance Live Analysis" tickers={tickers} weights={res.deterministic.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
+                <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.deterministic.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching}/>
+              </div>
+            </>
+          )}
 
           <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
             <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 14px"}}>Efficient Frontier</h3>
@@ -1591,9 +1796,9 @@ export default function PortfolioDashboard() {
           </div>
 
           {infoTab === "glossary" ? (
-            <GlossaryPanel histYrs={histYrs} varHorizonText={varHorizonText} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} />
+            <GlossaryPanel histYrs={histYrs} varHorizonText={varHorizonText} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} />
           ) : (
-            <ImplementationNotesPanel histYrs={histYrs} numSims={numSims} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} />
+            <ImplementationNotesPanel histYrs={histYrs} numSims={numSims} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} />
           )}
 
           <div style={{background:"rgba(234,179,8,.06)",border:"1px solid rgba(234,179,8,.15)",borderRadius:12,padding:"10px 14px",marginBottom:20}}>
