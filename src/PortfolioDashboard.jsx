@@ -629,7 +629,7 @@ function optimizeProjected(initial, gradientFn, objectiveFn, { maximize = false,
   return { weights: bestW, objective: bestObj };
 }
 
-function deterministicOptimize(mu, cov, rf) {
+function deterministicOptimize(mu, cov, rf, minVarVolCap = 0.2) {
   const n = mu.length;
   const equal = Array.from({ length: n }, () => 1 / n);
   const vols = cov.map((row, i) => Math.sqrt(Math.max(Number(row?.[i]) || 0, 1e-8)));
@@ -685,8 +685,41 @@ function deterministicOptimize(mu, cov, rf) {
     }
   }
 
+  const cappedSharpeObjective = (w) => {
+    const stats = portStats(w, mu, cov, rf);
+    const excessVol = Math.max(0, stats.vol - minVarVolCap);
+    return stats.sharpe - (250 * excessVol * excessVol);
+  };
+  const cappedSharpeGradient = (w) => {
+    const stats = portStats(w, mu, cov, rf);
+    const covW = matVec(cov, w);
+    const variance = Math.max(dot(w, covW), 1e-8);
+    const vol = Math.sqrt(variance);
+    const volCubed = Math.max(vol * vol * vol, 1e-8);
+    const excessRet = dot(w, mu) - rf;
+    const sharpeGrad = mu.map((m, i) => (m / vol) - (excessRet * covW[i] / volCubed));
+    const excessVol = Math.max(0, stats.vol - minVarVolCap);
+    if (excessVol <= 0) return sharpeGrad;
+    return sharpeGrad.map((g, i) => g - (500 * excessVol * covW[i] / Math.max(vol, 1e-8)));
+  };
+
+  let cappedWeights = minVarWeights;
+  let cappedObj = cappedSharpeObjective(minVarWeights);
+  for (const start of [...starts, minVarWeights, maxSharpeWeights]) {
+    const solved = optimizeProjected(start, cappedSharpeGradient, cappedSharpeObjective, {
+      maximize: true,
+      iterations: 900,
+      initialStep: 0.08,
+    });
+    if (solved.objective > cappedObj) {
+      cappedObj = solved.objective;
+      cappedWeights = solved.weights;
+    }
+  }
+
   return {
     minVar: { method: "Projected gradient (long-only simplex)", ...portStats(minVarWeights, mu, cov, rf), weights: minVarWeights },
+    minVarSharpeCap: { method: "Projected gradient with volatility-cap penalty", ...portStats(cappedWeights, mu, cov, rf), weights: cappedWeights, volCap: minVarVolCap },
     maxSharpe: { method: "Projected gradient (long-only simplex)", ...portStats(maxSharpeWeights, mu, cov, rf), weights: maxSharpeWeights },
   };
 }
@@ -1400,14 +1433,16 @@ export default function PortfolioDashboard() {
           maxSharpe: varFn(stats.assetReturns, result.maxSharpe.weights, histYrs),
         };
       } else {
-        const deterministic = deterministicOptimize(expectedMu, stats.cov, rfRate);
+        const deterministic = deterministicOptimize(expectedMu, stats.cov, rfRate, minVarVolCap);
         result = {
-          minVar: deterministic.minVar,
+          minVar: deterministic.minVarSharpeCap,
+          detTrueMinVar: deterministic.minVar,
           maxSharpe: deterministic.maxSharpe,
           deterministic,
           frontier: [],
           varAnalysis: {
-            minVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
+            minVar: varFn(stats.assetReturns, deterministic.minVarSharpeCap.weights, histYrs),
+            detTrueMinVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
             maxSharpe: varFn(stats.assetReturns, deterministic.maxSharpe.weights, histYrs),
           },
         };
@@ -1437,12 +1472,13 @@ export default function PortfolioDashboard() {
 
   const isDeterministicMode = res?.engineMode === "deterministic";
   const portfolioTab = isDeterministicMode
-    ? (tab === "minVar" ? "minVar" : "maxSharpe")
+    ? (tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe")
     : (tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe");
-  const port = res ? (portfolioTab === "maxSharpe" ? res.maxSharpe : portfolioTab === "trueMinVar" ? res.trueMinVar : res.minVar) : null;
+  const port = res ? (portfolioTab === "maxSharpe" ? res.maxSharpe : portfolioTab === "trueMinVar" ? (isDeterministicMode ? res.detTrueMinVar : res.trueMinVar) : res.minVar) : null;
   const fmt = v => (v == null || isNaN(v)) ? "\u2014" : (v * 100).toFixed(2) + "%";
   const fN = v => (v == null || isNaN(v)) ? "\u2014" : v.toFixed(3);
   const minVarVaR = res?.varAnalysis?.minVar || null;
+  const detTrueMinVarVaR = res?.varAnalysis?.detTrueMinVar || null;
   const trueMinVarVaR = res?.varAnalysis?.trueMinVar || null;
   const maxSharpeVaR = res?.varAnalysis?.maxSharpe || null;
   const varYearsRaw = minVarVaR?.years ?? trueMinVarVaR?.years ?? maxSharpeVaR?.years ?? (histStats?.months ? histStats.months / 12 : null);
@@ -1451,7 +1487,8 @@ export default function PortfolioDashboard() {
   const varHorizonText = `1-in-${varYearsLabel}-year`;
   const minVarPoint = res ? { x: +(res.minVar.vol * 100).toFixed(3), y: +(res.minVar.ret * 100).toFixed(3) } : null;
   const maxSharpePoint = res ? { x: +(res.maxSharpe.vol * 100).toFixed(3), y: +(res.maxSharpe.ret * 100).toFixed(3) } : null;
-  const trueMinVarPoint = res?.trueMinVar ? { x: +(res.trueMinVar.vol * 100).toFixed(3), y: +(res.trueMinVar.ret * 100).toFixed(3) } : null;
+  const trueMinVarBase = isDeterministicMode ? res?.detTrueMinVar : res?.trueMinVar;
+  const trueMinVarPoint = trueMinVarBase ? { x: +(trueMinVarBase.vol * 100).toFixed(3), y: +(trueMinVarBase.ret * 100).toFixed(3) } : null;
   const minVarOverlapsMaxSharpe = !!(minVarPoint && maxSharpePoint && minVarPoint.x === maxSharpePoint.x && minVarPoint.y === maxSharpePoint.y);
   const minVarChartPoint = minVarOverlapsMaxSharpe ? { x: +(minVarPoint.x - 0.08).toFixed(3), y: +(minVarPoint.y + 0.08).toFixed(3) } : minVarPoint;
   const maxSharpeChartPoint = minVarOverlapsMaxSharpe ? { x: +(maxSharpePoint.x + 0.08).toFixed(3), y: +(maxSharpePoint.y - 0.08).toFixed(3) } : maxSharpePoint;
@@ -1726,7 +1763,8 @@ export default function PortfolioDashboard() {
           {histStats && histStats.cov && isDeterministicMode && (
             <div style={{background:"#fff",borderRadius:14,padding:12,border:"1px solid #e2e8f0",marginBottom:10}}>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                <button onClick={()=>setTab("minVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="minVar"?"#2563eb":"#f1f5f9",color:tab==="minVar"?"#fff":"#475569"}}>Deterministic Min Variance</button>
+                <button onClick={()=>setTab("minVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="minVar"?"#10b981":"#f1f5f9",color:tab==="minVar"?"#fff":"#475569"}}>Deterministic Min Variance (by Sharpe)</button>
+                <button onClick={()=>setTab("trueMinVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="trueMinVar"?"#2563eb":"#f1f5f9",color:tab==="trueMinVar"?"#fff":"#475569"}}>Deterministic True Min Variance</button>
                 <button onClick={()=>setTab("maxSharpe")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="maxSharpe"?"#ca8a04":"#f1f5f9",color:tab==="maxSharpe"?"#fff":"#475569"}}>Deterministic Max Sharpe</button>
               </div>
             </div>
@@ -1747,7 +1785,8 @@ export default function PortfolioDashboard() {
             {[
               ...(isDeterministicMode
                 ? [
-                    { title:"Deterministic Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.minVar, varData:minVarVaR },
+                    { title:"Deterministic Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Deterministic Sharpe with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%` },
+                    { title:"Deterministic True Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.detTrueMinVar, varData:detTrueMinVarVaR },
                     { title:"Deterministic Max Sharpe", bg:"linear-gradient(135deg,#fefce8,#fde68a)", border:"#fcd34d", metricColor:"#ca8a04", p:res.maxSharpe, varData:maxSharpeVaR }
                   ]
                 : [
@@ -1789,7 +1828,7 @@ export default function PortfolioDashboard() {
 
           <div style={{fontSize:11,color:"#64748b",marginBottom:20}}>
             {isDeterministicMode
-              ? "Deterministic mode uses projected-gradient long-only optimization. It is not a quadratic-programming solver."
+              ? "Deterministic mode uses projected-gradient long-only optimization. It is not a quadratic-programming solver. The Min Variance (by Sharpe) variant is implemented as a capped-Sharpe objective with a volatility-cap penalty."
               : "Note: \"Best Min Variance (by Sharpe)\" is the highest-Sharpe portfolio that satisfies the volatility cap. \"True Min Variance\" is the absolute lowest-volatility portfolio."}
           </div>
 
@@ -1850,7 +1889,8 @@ export default function PortfolioDashboard() {
           <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
             {isDeterministicMode ? (
               <>
-                <LiveAnalysisTable title="Deterministic Min Variance Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
+                <LiveAnalysisTable title="Deterministic Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching}/>
+                <LiveAnalysisTable title="Deterministic True Min Variance Live Analysis" tickers={tickers} weights={res.detTrueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
                 <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching}/>
               </>
             ) : (
