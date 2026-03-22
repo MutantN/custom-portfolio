@@ -1125,6 +1125,7 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
     { term: "Correlation Matrix", formula: <>ρ<sub>ij</sub> = Cov(r<sub>i</sub>, r<sub>j</sub>) / (σ<sub>i</sub> · σ<sub>j</sub>)</>, meaning: "Normalized co-movement between assets, in [-1, 1]." },
     { term: "Portfolio Expected Return", formula: <>R<sub>p</sub> = w<sup>T</sup>μ = Σ w<sub>i</sub>μ<sub>i</sub></>, meaning: "Weight vector times annualized expected return vector." },
     { term: "Portfolio Volatility", formula: <>σ<sub>p</sub> = √(w<sup>T</sup>Σw)</>, meaning: "Quadratic form of weights and covariance matrix." },
+    { term: "Weighted Contribution to Portfolio Variance", formula: <>Contribution<sub>ij</sub> = w<sub>i</sub>w<sub>j</sub>Σ<sub>ij</sub></>, meaning: "Matrix view of how each pair of positions contributes to total portfolio variance. Shown in the collapsible matrix panel for the active portfolio." },
     { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: `Risk-adjusted expected return; dashboard currently uses R_f = ${(rfRate * 100).toFixed(1)}%.` },
     { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo approximates it with random weights; deterministic mode selects it from a QP-built frontier on the user tickers.` },
     { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility long-only portfolio. Monte Carlo approximates it over random weights; deterministic mode solves it directly with quadratic programming." },
@@ -1132,6 +1133,7 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
     { term: "Deterministic Search Engine", formula: <>w* = QP(μ, Σ, R<sub>f</sub>)</>, meaning: `Current deterministic mode solves a long-only quadratic program directly on the user-entered ticker set, with covariance regularization and efficient-frontier selection. Active engine: ${engineMode}.` },
     { term: `Historical VaR (${varHorizonText})`, formula: <>min<sub>s</sub> [exp(Σ<sub>k=s</sub><sup>s+11</sup> r<sub>p,k</sub>) - 1]</>, meaning: "Worst realized rolling 12-month return from historical portfolio returns r_p,k." },
     { term: `Parametric VaR (${varHorizonText})`, formula: <>VaR = exp(μ<sub>annual</sub> + z<sub>p</sub>σ<sub>annual</sub>) - 1, p=1/N</>, meaning: "Normal-approx annual left-tail quantile from portfolio log-return mean and volatility." },
+    { term: "XLSX Export", formula: <>Workbook = {"{Summary, Holdings}"}</>, meaning: "Each live-analysis panel can export a real .xlsx workbook with a summary sheet and a holdings sheet. The XLSX library is loaded only when the export button is clicked." },
     { term: "Upside %", formula: <>((Target / Price) - 1) × 100</>, meaning: "Implied move from live price to analyst target." },
     { term: "Risk/Reward (R/R)", formula: <>(Target - Entry) / (Price - Entry)</>, meaning: "Expected reward per unit of current downside-to-entry risk." },
   ];
@@ -1163,10 +1165,12 @@ function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, mi
     { title: "Data Source Split", body: "Optimization uses Yahoo historical prices; live analysis table uses Finnhub + FMP. These are separate pipelines." },
     { title: "History Window", body: `Requested lookback is ${histYrs} year${histYrs > 1 ? "s" : ""}, then reduced to overlapping months common to all tickers before stats are computed.` },
     { title: "Return Construction", body: `Return model is selectable (current: ${returnModel}). Historical uses annualized mean monthly log returns. Modeled uses Finnhub/FMP target-implied log return blended with historical means by analyst-count confidence. Covariance always remains historical.` },
-    { title: "Engine Mode", body: `Current engine selection is ${engineMode}. Monte Carlo uses ${numSims.toLocaleString()} random long-only portfolios on the fixed user ticker list. Deterministic mode solves the same fixed user ticker list directly with quadratic programming, without subset sampling.` },
+    { title: "Engine Mode", body: `Current engine selection is ${engineMode}. Monte Carlo uses ${numSims.toLocaleString()} random long-only portfolios on the fixed user ticker list. Deterministic mode solves the same fixed user ticker list directly with quadratic programming, without subset sampling. The simulations control applies only to Monte Carlo.` },
     { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo keeps the highest-Sharpe eligible simulation; deterministic mode keeps the highest-Sharpe eligible efficient-frontier point.` },
     { title: "Deterministic Search", body: "The deterministic engine is a quadratic-programming and efficient-frontier solver with covariance regularization. It is not a projected-gradient search anymore." },
     { title: "Portfolio Variants", body: "Both engines surface Best Min Variance (by Sharpe), True Min Variance, and Best Max Sharpe on the same user-specified ticker set." },
+    { title: "Matrix Panel", body: "The variance-covariance matrix and weighted contribution matrix are now collapsed by default and expand only when clicked, so the main results stay compact." },
+    { title: "Downloads", body: "Each live-analysis panel exports a real .xlsx workbook with Summary and Holdings sheets. The workbook library is lazy-loaded so export does not bloat the initial app bundle." },
     { title: "VaR Method", body: `VaR method is selectable (current: ${varMethod}). Historical VaR uses worst realized rolling 12-month outcomes. Parametric VaR uses a normal annual left-tail quantile with p = 1/N-year.` },
     { title: "Sharpe Inputs", body: `Sharpe uses a user-specified risk-free rate (current: ${(rfRate * 100).toFixed(1)}%). Changing it can change rankings even if mu/cov are unchanged.` },
     { title: "Model Limits", body: "No shorting, no leverage, no transaction costs, no rebalance schedule, and no regime-switching model." },
@@ -1176,7 +1180,7 @@ function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, mi
     <div style={{background:"#fff",borderRadius:16,overflow:"hidden",border:"1px solid #e2e8f0",marginBottom:20}}>
       <div style={{padding:"14px 16px",borderBottom:"1px solid #f1f5f9",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
         <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>Implementation Notes</h3>
-        <span style={{fontSize:14,color:"#64748b"}}>{histYrs}yr lookback · {numSims.toLocaleString()} sims</span>
+        <span style={{fontSize:14,color:"#64748b"}}>{histYrs}yr lookback · {engineMode === "monteCarlo" ? `${numSims.toLocaleString()} sims` : "direct QP solve"}</span>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:10,padding:14}}>
         {notes.map((n) => (
