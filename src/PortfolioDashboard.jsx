@@ -786,7 +786,7 @@ function CorrelationMatrixTable({ tickers, corr, title }) {
   );
 }
 
-function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
+function CovarianceMatrixTable({ tickers, cov, weights, activeLabel }) {
   const [expanded, setExpanded] = useState(false);
   if (!cov || !tickers || tickers.length === 0) return null;
   const n = tickers.length;
@@ -811,7 +811,7 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
         style={{width:"100%",padding:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",border:"none",borderBottom:expanded?"1px solid #f1f5f9":"none",background:"transparent",cursor:"pointer",textAlign:"left"}}
       >
         <div>
-          <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{title || "Portfolio Variance Contribution Matrix"}</h3>
+          <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>Portfolio Variance Contribution Matrix</h3>
           <div style={{fontSize:13,color:"#64748b",marginTop:2}}>{n}x{n} weighted contribution to portfolio variance</div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
@@ -1073,7 +1073,7 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
     { term: "Correlation Matrix", formula: <>ρ<sub>ij</sub> = Cov(r<sub>i</sub>, r<sub>j</sub>) / (σ<sub>i</sub> · σ<sub>j</sub>)</>, meaning: "Normalized co-movement between assets, in [-1, 1]." },
     { term: "Portfolio Expected Return", formula: <>R<sub>p</sub> = w<sup>T</sup>μ = Σ w<sub>i</sub>μ<sub>i</sub></>, meaning: "Weight vector times annualized expected return vector." },
     { term: "Portfolio Volatility", formula: <>σ<sub>p</sub> = √(w<sup>T</sup>Σw)</>, meaning: "Quadratic form of weights and covariance matrix." },
-    { term: "Weighted Contribution to Portfolio Variance", formula: <>Contribution<sub>ij</sub> = w<sub>i</sub>w<sub>j</sub>Σ<sub>ij</sub></>, meaning: "Matrix view of how each pair of positions contributes to total portfolio variance. Shown in the collapsible matrix panel for the active portfolio." },
+    { term: "Weighted Contribution to Portfolio Variance", formula: <>Contribution<sub>ij</sub> = w<sub>i</sub>w<sub>j</sub>Σ<sub>ij</sub></>, meaning: "Matrix view of how each pair of positions contributes to total portfolio variance. This is the only risk matrix currently shown in the collapsible panel for the active portfolio." },
     { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: `Risk-adjusted expected return; dashboard currently uses R_f = ${(rfRate * 100).toFixed(1)}%.` },
     { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo approximates it with random weights; deterministic mode selects it from a QP-built frontier on the user tickers.` },
     { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility long-only portfolio. Monte Carlo approximates it over random weights; deterministic mode solves it directly with quadratic programming." },
@@ -1117,7 +1117,7 @@ function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, mi
     { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%. Monte Carlo keeps the highest-Sharpe eligible simulation; deterministic mode keeps the highest-Sharpe eligible efficient-frontier point.` },
     { title: "Deterministic Search", body: "The deterministic engine is a quadratic-programming and efficient-frontier solver with covariance regularization. It is not a projected-gradient search anymore." },
     { title: "Portfolio Variants", body: "Both engines surface Best Min Variance (by Sharpe), True Min Variance, and Best Max Sharpe on the same user-specified ticker set." },
-    { title: "Matrix Panel", body: "The variance-covariance matrix and weighted contribution matrix are now collapsed by default and expand only when clicked, so the main results stay compact." },
+    { title: "Matrix Panel", body: "The dashboard now shows only the weighted contribution-to-portfolio-variance matrix. It stays collapsed by default and expands only when clicked, so the main results stay compact." },
     { title: "Downloads", body: "Each live-analysis panel exports a real .xlsx workbook with Summary and Holdings sheets. The workbook library is lazy-loaded so export does not bloat the initial app bundle." },
     { title: "VaR Method", body: `VaR method is selectable (current: ${varMethod}). Historical VaR uses worst realized rolling 12-month outcomes. Parametric VaR uses a normal annual left-tail quantile with p = 1/N-year.` },
     { title: "Sharpe Inputs", body: `Sharpe uses a user-specified risk-free rate (current: ${(rfRate * 100).toFixed(1)}%). Changing it can change rankings even if mu/cov are unchanged.` },
