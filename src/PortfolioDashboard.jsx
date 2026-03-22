@@ -1178,7 +1178,7 @@ function LiveAnalysisTable({ title, tickers, weights, stocks, liveData, accentCo
   );
 }
 
-function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVarVolCap, rfRate }) {
+function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVarVolCap, rfRate, engineMode }) {
   const items = [
     { term: "Monthly Log Return (Asset i)", formula: <>r<sub>i,t</sub> = ln(P<sub>i,t</sub> / P<sub>i,t-1</sub>)</>, meaning: "Computed from aligned monthly adjusted-close prices." },
     { term: "Annualized Expected Return (Asset i)", formula: <>μ<sub>i</sub> = 12 · mean(r<sub>i,t</sub>)</>, meaning: "Historical monthly mean log-return annualized by 12." },
@@ -1189,9 +1189,10 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
     { term: "Portfolio Expected Return", formula: <>R<sub>p</sub> = w<sup>T</sup>μ = Σ w<sub>i</sub>μ<sub>i</sub></>, meaning: "Weight vector times annualized expected return vector." },
     { term: "Portfolio Volatility", formula: <>σ<sub>p</sub> = √(w<sup>T</sup>Σw)</>, meaning: "Quadratic form of weights and covariance matrix." },
     { term: "Sharpe Ratio", formula: <>Sharpe = (R<sub>p</sub> - R<sub>f</sub>) / σ<sub>p</sub></>, meaning: `Risk-adjusted expected return; dashboard currently uses R_f = ${(rfRate * 100).toFixed(1)}%.` },
-    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%.` },
+    { term: "Best Min Variance (by Sharpe)", formula: <>w* = argmax<sub>w: σ<sub>p</sub> ≤ σ<sub>cap</sub></sub> Sharpe</>, meaning: `Highest Sharpe Monte Carlo portfolio subject to a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%.` },
     { term: "True Min Variance Portfolio", formula: <>w* = argmin<sub>w</sub> σ<sub>p</sub></>, meaning: "Absolute lowest-volatility portfolio across all Monte Carlo random long-only weights." },
     { term: "Max Sharpe Portfolio", formula: <>w* = argmax<sub>w</sub> Sharpe</>, meaning: "Best Sharpe portfolio among Monte Carlo random long-only weights." },
+    { term: "Deterministic Search Engine", formula: <>w* = ProjectedGradient(μ, Σ, R<sub>f</sub>)</>, meaning: `Current deterministic mode uses projected-gradient optimization on the long-only simplex, not quadratic programming. Active engine: ${engineMode}.` },
     { term: `Historical VaR (${varHorizonText})`, formula: <>min<sub>s</sub> [exp(Σ<sub>k=s</sub><sup>s+11</sup> r<sub>p,k</sub>) - 1]</>, meaning: "Worst realized rolling 12-month return from historical portfolio returns r_p,k." },
     { term: `Parametric VaR (${varHorizonText})`, formula: <>VaR = exp(μ<sub>annual</sub> + z<sub>p</sub>σ<sub>annual</sub>) - 1, p=1/N</>, meaning: "Normal-approx annual left-tail quantile from portfolio log-return mean and volatility." },
     { term: "Upside %", formula: <>((Target / Price) - 1) × 100</>, meaning: "Implied move from live price to analyst target." },
@@ -1220,15 +1221,15 @@ function GlossaryPanel({ histYrs, varHorizonText, returnModel, varMethod, minVar
   );
 }
 
-function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, minVarVolCap, rfRate }) {
+function ImplementationNotesPanel({ histYrs, numSims, returnModel, varMethod, minVarVolCap, rfRate, engineMode }) {
   const notes = [
     { title: "Data Source Split", body: "Optimization uses Yahoo historical prices; live analysis table uses Finnhub + FMP. These are separate pipelines." },
     { title: "History Window", body: `Requested lookback is ${histYrs} year${histYrs > 1 ? "s" : ""}, then reduced to overlapping months common to all tickers before stats are computed.` },
     { title: "Return Construction", body: `Return model is selectable (current: ${returnModel}). Historical uses annualized mean monthly log returns. Modeled uses Finnhub/FMP target-implied log return blended with historical means by analyst-count confidence. Covariance always remains historical.` },
-    { title: "Monte Carlo Search", body: `The optimizer evaluates ${numSims.toLocaleString()} random long-only weight vectors (sum to 1) and keeps best candidates by objective.` },
+    { title: "Engine Mode", body: `Current engine selection is ${engineMode}. Monte Carlo uses ${numSims.toLocaleString()} random long-only portfolios. Deterministic uses projected-gradient search on the simplex.` },
     { title: "Volatility Cap", body: `Best Min Variance (by Sharpe) uses a hard volatility cap of ${(minVarVolCap * 100).toFixed(1)}%; among eligible simulations, the highest Sharpe is selected.` },
-    { title: "Deterministic Search", body: "A projected-gradient long-only solver is also run on the same mu/cov inputs to produce deterministic min-variance and max-Sharpe portfolios for comparison." },
-    { title: "Portfolio Variants", body: "Max Sharpe = highest Sharpe overall. True Min Variance = lowest volatility overall. Best Min Variance (by Sharpe) = highest Sharpe that stays below the volatility cap." },
+    { title: "Deterministic Search", body: "The deterministic engine is a projected-gradient long-only solver. It is not a quadratic-programming solver or quadratic search implementation." },
+    { title: "Portfolio Variants", body: "Monte Carlo mode shows Max Sharpe, True Min Variance, and Min Variance by Sharpe-under-cap. Deterministic mode shows Min Variance and Max Sharpe from the projected-gradient solver." },
     { title: "VaR Method", body: `VaR method is selectable (current: ${varMethod}). Historical VaR uses worst realized rolling 12-month outcomes. Parametric VaR uses a normal annual left-tail quantile with p = 1/N-year.` },
     { title: "Sharpe Inputs", body: `Sharpe uses a user-specified risk-free rate (current: ${(rfRate * 100).toFixed(1)}%). Changing it can change rankings even if mu/cov are unchanged.` },
     { title: "Model Limits", body: "No shorting, no leverage, no transaction costs, no rebalance schedule, and no regime-switching model." },
@@ -1271,6 +1272,7 @@ export default function PortfolioDashboard() {
   const [varMethod, setVarMethod] = useState("historical");
   const [minVarVolCap, setMinVarVolCap] = useState(0.2);
   const [rfRate, setRfRate] = useState(0.04);
+  const [engineMode, setEngineMode] = useState("monteCarlo");
 
   const [liveData, setLiveData] = useState({});
   const [fetching, setFetching] = useState(false);
@@ -1371,7 +1373,7 @@ export default function PortfolioDashboard() {
       let expectedMu = stats.mu;
       let modelCoverage = null;
       if (returnModel === "modeled") {
-        setOptMsg(`Historical data loaded (${stats.months} months). Building modeled expected returns...`);
+      setOptMsg(`Historical data loaded (${stats.months} months). Building modeled expected returns...`);
         try {
           const modeled = await buildModeledExpectedReturns(tickers, stats.mu);
           expectedMu = modeled.modeledMu;
@@ -1381,20 +1383,36 @@ export default function PortfolioDashboard() {
           expectedMu = stats.mu;
         }
       }
-      setOptMsg(`Inputs ready. Running ${numSims.toLocaleString()} simulations...`);
+      setOptMsg(engineMode === "monteCarlo"
+        ? `Inputs ready. Running ${numSims.toLocaleString()} Monte Carlo simulations...`
+        : "Inputs ready. Running deterministic projected-gradient search...");
 
       await new Promise(r => setTimeout(r, 30));
 
-      const result = optimizeWithData(expectedMu, stats.cov, rfRate, numSims, minVarVolCap);
       const varFn = varMethod === "parametric" ? computeParametricVaR : computeOneInNYearWorstLoss;
-      const deterministic = deterministicOptimize(expectedMu, stats.cov, rfRate);
-      result.varAnalysis = {
-        minVar: varFn(stats.assetReturns, result.minVar.weights, histYrs),
-        trueMinVar: varFn(stats.assetReturns, result.trueMinVar.weights, histYrs),
-        maxSharpe: varFn(stats.assetReturns, result.maxSharpe.weights, histYrs),
-        detMinVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
-        detMaxSharpe: varFn(stats.assetReturns, deterministic.maxSharpe.weights, histYrs)
-      };
+      let result;
+
+      if (engineMode === "monteCarlo") {
+        result = optimizeWithData(expectedMu, stats.cov, rfRate, numSims, minVarVolCap);
+        result.varAnalysis = {
+          minVar: varFn(stats.assetReturns, result.minVar.weights, histYrs),
+          trueMinVar: varFn(stats.assetReturns, result.trueMinVar.weights, histYrs),
+          maxSharpe: varFn(stats.assetReturns, result.maxSharpe.weights, histYrs),
+        };
+      } else {
+        const deterministic = deterministicOptimize(expectedMu, stats.cov, rfRate);
+        result = {
+          minVar: deterministic.minVar,
+          maxSharpe: deterministic.maxSharpe,
+          deterministic,
+          frontier: [],
+          varAnalysis: {
+            minVar: varFn(stats.assetReturns, deterministic.minVar.weights, histYrs),
+            maxSharpe: varFn(stats.assetReturns, deterministic.maxSharpe.weights, histYrs),
+          },
+        };
+      }
+
       result.dataSource = 'historical';
       result.histYrs = histYrs;
       result.returnModel = returnModel;
@@ -1402,12 +1420,12 @@ export default function PortfolioDashboard() {
       result.minVarVolCap = minVarVolCap;
       result.rfRate = rfRate;
       result.modelCoverage = modelCoverage;
-      result.deterministic = deterministic;
+      result.engineMode = engineMode;
 
       setRes(result);
       setBusy(false);
-      setTab("maxSharpe");
-      setOptMsg(`Optimized using ${histYrs}yr historical prices (${stats.months} months), return=${returnModel}, VaR=${varMethod}, RF=${(rfRate * 100).toFixed(1)}%, min-var cap=${(minVarVolCap * 100).toFixed(1)}%`);
+      setTab(engineMode === "deterministic" ? "maxSharpe" : "maxSharpe");
+      setOptMsg(`Optimized using ${histYrs}yr historical prices (${stats.months} months), engine=${engineMode}, return=${returnModel}, VaR=${varMethod}, RF=${(rfRate * 100).toFixed(1)}%, min-var cap=${(minVarVolCap * 100).toFixed(1)}%`);
     } catch (err) {
       console.error('Historical fetch failed:', err);
       setBusy(false);
@@ -1415,17 +1433,18 @@ export default function PortfolioDashboard() {
       setOptMsg(msg);
       setHistStats(null);
     }
-  }, [tickers, numSims, histYrs, returnModel, varMethod, minVarVolCap, rfRate]);
+  }, [tickers, numSims, histYrs, returnModel, varMethod, minVarVolCap, rfRate, engineMode]);
 
-  const portfolioTab = tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe";
+  const isDeterministicMode = res?.engineMode === "deterministic";
+  const portfolioTab = isDeterministicMode
+    ? (tab === "minVar" ? "minVar" : "maxSharpe")
+    : (tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe");
   const port = res ? (portfolioTab === "maxSharpe" ? res.maxSharpe : portfolioTab === "trueMinVar" ? res.trueMinVar : res.minVar) : null;
   const fmt = v => (v == null || isNaN(v)) ? "\u2014" : (v * 100).toFixed(2) + "%";
   const fN = v => (v == null || isNaN(v)) ? "\u2014" : v.toFixed(3);
   const minVarVaR = res?.varAnalysis?.minVar || null;
   const trueMinVarVaR = res?.varAnalysis?.trueMinVar || null;
   const maxSharpeVaR = res?.varAnalysis?.maxSharpe || null;
-  const detMinVarVaR = res?.varAnalysis?.detMinVar || null;
-  const detMaxSharpeVaR = res?.varAnalysis?.detMaxSharpe || null;
   const varYearsRaw = minVarVaR?.years ?? trueMinVarVaR?.years ?? maxSharpeVaR?.years ?? (histStats?.months ? histStats.months / 12 : null);
   const varYears = varYearsRaw != null ? Math.max(varYearsRaw, 1 / 12) : null;
   const varYearsLabel = varYears == null ? "N" : (Math.abs(varYears - Math.round(varYears)) < 0.05 ? String(Math.round(varYears)) : varYears.toFixed(1));
@@ -1451,6 +1470,7 @@ export default function PortfolioDashboard() {
           </div>
           <div style={{fontFamily:MO,fontSize:13,color:"#475569",textAlign:"right"}}>
             <div style={{fontWeight:600,color:"#f59e0b"}}>Author: Amadea Schaum</div>
+            <div>{engineMode === "monteCarlo" ? "Engine: Monte Carlo" : "Engine: Deterministic"}</div>
             <div>RF: {(rfRate*100).toFixed(1)}%</div>
           </div>
         </div>
@@ -1574,6 +1594,19 @@ export default function PortfolioDashboard() {
             </div>
           </div>
 
+          <div style={{marginBottom:16}}>
+            <label style={{display:"block",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>Search Engine</label>
+            <div style={{display:"inline-flex",gap:6,padding:4,borderRadius:10,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.12)"}}>
+              <button onClick={()=>setEngineMode("monteCarlo")} disabled={busy} style={{padding:"7px 10px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:busy?"not-allowed":"pointer",background:engineMode==="monteCarlo"?"#14b8a6":"transparent",color:engineMode==="monteCarlo"?"#fff":"#94a3b8"}}>Monte Carlo</button>
+              <button onClick={()=>setEngineMode("deterministic")} disabled={busy} style={{padding:"7px 10px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:busy?"not-allowed":"pointer",background:engineMode==="deterministic"?"#2563eb":"transparent",color:engineMode==="deterministic"?"#fff":"#94a3b8"}}>Deterministic</button>
+            </div>
+            <div style={{fontSize:12,color:"#64748b",marginTop:5}}>
+              {engineMode === "monteCarlo"
+                ? "Uses random long-only portfolio search and supports the efficient frontier chart."
+                : "Uses projected-gradient optimization on the long-only simplex. This is not quadratic programming."}
+            </div>
+          </div>
+
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div>
               <label style={{display:"block",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>Return Model</label>
@@ -1635,8 +1668,8 @@ export default function PortfolioDashboard() {
               {`\u2713 ${res.histYrs}yr Real Historical Prices (Yahoo Finance)`}
             </div>
             {histStats && histStats.note && <span style={{fontSize:14,color:"#64748b"}}>{histStats.note}</span>}
-            <span style={{fontSize:13,color:"#64748b"}}>{`Return model: ${res.returnModel || "historical"} · VaR: ${res.varMethod || "historical"} · RF: ${((res.rfRate ?? rfRate) * 100).toFixed(1)}% · min-var cap: ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%`}</span>
-            {res.deterministic && <span style={{fontSize:13,color:"#64748b"}}>{`Deterministic engine: ${res.deterministic.minVar.method}`}</span>}
+            <span style={{fontSize:13,color:"#64748b"}}>{`Engine: ${res.engineMode || engineMode} · Return model: ${res.returnModel || "historical"} · VaR: ${res.varMethod || "historical"} · RF: ${((res.rfRate ?? rfRate) * 100).toFixed(1)}% · min-var cap: ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}%`}</span>
+            {res.deterministic && <span style={{fontSize:13,color:"#64748b"}}>{`Deterministic method: ${res.deterministic.minVar.method}`}</span>}
             {res.modelCoverage && (
               <span style={{fontSize:13,color:"#64748b"}}>{`Modeled coverage: ${res.modelCoverage.targetBased} target-based, ${res.modelCoverage.fallbackHistorical} historical fallback${res.modelCoverage.error ? " (fallback used)" : ""}`}</span>
             )}
@@ -1680,12 +1713,21 @@ export default function PortfolioDashboard() {
           )}
 
           {/* Portfolio criterion tabs for weighted contribution matrix */}
-          {histStats && histStats.cov && (
+          {histStats && histStats.cov && !isDeterministicMode && (
             <div style={{background:"#fff",borderRadius:14,padding:12,border:"1px solid #e2e8f0",marginBottom:10}}>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 <button onClick={()=>setTab("minVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="minVar"?"#10b981":"#f1f5f9",color:tab==="minVar"?"#fff":"#475569"}}>Best Min Variance (by Sharpe)</button>
                 <button onClick={()=>setTab("trueMinVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="trueMinVar"?"#3b82f6":"#f1f5f9",color:tab==="trueMinVar"?"#fff":"#475569"}}>True Min Variance</button>
                 <button onClick={()=>setTab("maxSharpe")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="maxSharpe"?"#f59e0b":"#f1f5f9",color:tab==="maxSharpe"?"#fff":"#475569"}}>Best Max Sharpe</button>
+              </div>
+            </div>
+          )}
+
+          {histStats && histStats.cov && isDeterministicMode && (
+            <div style={{background:"#fff",borderRadius:14,padding:12,border:"1px solid #e2e8f0",marginBottom:10}}>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={()=>setTab("minVar")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="minVar"?"#2563eb":"#f1f5f9",color:tab==="minVar"?"#fff":"#475569"}}>Deterministic Min Variance</button>
+                <button onClick={()=>setTab("maxSharpe")} style={{padding:"8px 12px",borderRadius:8,border:"none",fontSize:13,fontWeight:700,cursor:"pointer",background:tab==="maxSharpe"?"#ca8a04":"#f1f5f9",color:tab==="maxSharpe"?"#fff":"#475569"}}>Deterministic Max Sharpe</button>
               </div>
             </div>
           )}
@@ -1703,16 +1745,23 @@ export default function PortfolioDashboard() {
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:14,marginBottom:10}}>
             {[
-              { title:"Best Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Top Sharpe with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}% (${res.minVarEligibleCount} eligible sims)` },
-              { title:"True Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#1d4ed8", p:res.trueMinVar, varData:trueMinVarVaR },
-              { title:"Best Max Sharpe", bg:"linear-gradient(135deg,#fffbeb,#fed7aa)", border:"#fdba74", metricColor:"#b45309", p:res.maxSharpe, varData:maxSharpeVaR }
+              ...(isDeterministicMode
+                ? [
+                    { title:"Deterministic Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.minVar, varData:minVarVaR },
+                    { title:"Deterministic Max Sharpe", bg:"linear-gradient(135deg,#fefce8,#fde68a)", border:"#fcd34d", metricColor:"#ca8a04", p:res.maxSharpe, varData:maxSharpeVaR }
+                  ]
+                : [
+                    { title:"Best Min Variance (by Sharpe)", bg:"linear-gradient(135deg,#ecfdf5,#ccfbf1)", border:"#a7f3d0", metricColor:"#047857", p:res.minVar, varData:minVarVaR, note:`Top Sharpe with vol <= ${((res.minVarVolCap ?? minVarVolCap) * 100).toFixed(1)}% (${res.minVarEligibleCount} eligible sims)` },
+                    { title:"True Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#1d4ed8", p:res.trueMinVar, varData:trueMinVarVaR },
+                    { title:"Best Max Sharpe", bg:"linear-gradient(135deg,#fffbeb,#fed7aa)", border:"#fdba74", metricColor:"#b45309", p:res.maxSharpe, varData:maxSharpeVaR }
+                  ])
             ].map((card) => (
               <div key={card.title} style={{background:card.bg,borderRadius:16,padding:18,border:`1px solid ${card.border}`}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
                   <div style={{width:10,height:10,borderRadius:999,background:card.metricColor}}/>
                   <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{card.title}</h3>
                   <span style={{fontSize:11,fontWeight:700,color:card.metricColor,background:"#fff",padding:"2px 8px",borderRadius:999,marginLeft:"auto"}}>
-                    #{Number.isFinite(card.p.simNumber) ? card.p.simNumber.toLocaleString() : "n/a"}
+                    {Number.isFinite(card.p.simNumber) ? `#${card.p.simNumber.toLocaleString()}` : "deterministic"}
                   </span>
                 </div>
                 {card.note && <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>{card.note}</div>}
@@ -1739,10 +1788,12 @@ export default function PortfolioDashboard() {
           </div>
 
           <div style={{fontSize:11,color:"#64748b",marginBottom:20}}>
-            Note: "Best Min Variance (by Sharpe)" is the highest-Sharpe portfolio that satisfies the volatility cap. "True Min Variance" is the absolute lowest-volatility portfolio.
+            {isDeterministicMode
+              ? "Deterministic mode uses projected-gradient long-only optimization. It is not a quadratic-programming solver."
+              : "Note: \"Best Min Variance (by Sharpe)\" is the highest-Sharpe portfolio that satisfies the volatility cap. \"True Min Variance\" is the absolute lowest-volatility portfolio."}
           </div>
 
-          {res.deterministic && (
+          {res.deterministic && !isDeterministicMode && (
             <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
                 <div>
@@ -1782,61 +1833,7 @@ export default function PortfolioDashboard() {
             </div>
           )}
 
-          {res.deterministic && (
-            <>
-              <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
-                  <div>
-                    <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 4px"}}>Deterministic Optimizer</h3>
-                    <div style={{fontSize:12,color:"#64748b"}}>Long-only simplex search on the same historical inputs. Monte Carlo remains available above for stochastic comparison.</div>
-                  </div>
-                  <div style={{fontSize:12,fontWeight:700,color:"#475569",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:999,padding:"5px 10px"}}>
-                    {res.deterministic.minVar.method}
-                  </div>
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:14}}>
-                  {[
-                    { title:"Deterministic Min Variance", bg:"linear-gradient(135deg,#eff6ff,#dbeafe)", border:"#bfdbfe", metricColor:"#2563eb", p:res.deterministic.minVar, varData:detMinVarVaR },
-                    { title:"Deterministic Max Sharpe", bg:"linear-gradient(135deg,#fefce8,#fde68a)", border:"#fcd34d", metricColor:"#ca8a04", p:res.deterministic.maxSharpe, varData:detMaxSharpeVaR }
-                  ].map((card) => (
-                    <div key={card.title} style={{background:card.bg,borderRadius:16,padding:18,border:`1px solid ${card.border}`}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                        <div style={{width:10,height:10,borderRadius:999,background:card.metricColor}} />
-                        <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{card.title}</h3>
-                        <span style={{fontSize:11,fontWeight:700,color:card.metricColor,background:"#fff",padding:"2px 8px",borderRadius:999,marginLeft:"auto"}}>
-                          deterministic
-                        </span>
-                      </div>
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:10,textAlign:"center"}}>
-                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
-                          <div style={{fontSize:18,fontWeight:800,color:card.metricColor,fontFamily:MO}}>{fmt(card.p.ret)}</div>
-                          <div style={{fontSize:11,color:"#64748b"}}>Return</div>
-                        </div>
-                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
-                          <div style={{fontSize:18,fontWeight:800,color:"#334155",fontFamily:MO}}>{fmt(card.p.vol)}</div>
-                          <div style={{fontSize:11,color:"#64748b"}}>Vol</div>
-                        </div>
-                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
-                          <div style={{fontSize:18,fontWeight:800,color:card.metricColor,fontFamily:MO}}>{fN(card.p.sharpe)}</div>
-                          <div style={{fontSize:11,color:"#64748b"}}>Sharpe</div>
-                        </div>
-                        <div style={{background:"rgba(255,255,255,.7)",border:"1px solid rgba(226,232,240,.9)",borderRadius:10,padding:"10px 8px"}}>
-                          <div style={{fontSize:18,fontWeight:800,color:"#be123c",fontFamily:MO}}>{fmt(card.varData?.worstLoss)}</div>
-                          <div style={{fontSize:11,color:"#64748b"}}>{`VaR ${res.varMethod === "parametric" ? "(Parametric)" : "(Historical)"} ${varHorizonText}`}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
-                <LiveAnalysisTable title="Deterministic Min Variance Live Analysis" tickers={tickers} weights={res.deterministic.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
-                <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.deterministic.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching}/>
-              </div>
-            </>
-          )}
-
+          {!isDeterministicMode && (
           <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
             <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 14px"}}>Efficient Frontier</h3>
             <Suspense fallback={<div style={{height:310,display:"grid",placeItems:"center",color:"#64748b",fontSize:14}}>Loading frontier chart...</div>}>
@@ -1848,11 +1845,21 @@ export default function PortfolioDashboard() {
               />
             </Suspense>
           </div>
+          )}
 
           <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
-            <LiveAnalysisTable title="Best Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching}/>
-            <LiveAnalysisTable title="True Min Variance Live Analysis" tickers={tickers} weights={res.trueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#22c55e" loading={fetching}/>
-            <LiveAnalysisTable title="Best Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#f59e0b" loading={fetching}/>
+            {isDeterministicMode ? (
+              <>
+                <LiveAnalysisTable title="Deterministic Min Variance Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
+                <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching}/>
+              </>
+            ) : (
+              <>
+                <LiveAnalysisTable title="Best Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching}/>
+                <LiveAnalysisTable title="True Min Variance Live Analysis" tickers={tickers} weights={res.trueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#22c55e" loading={fetching}/>
+                <LiveAnalysisTable title="Best Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#f59e0b" loading={fetching}/>
+              </>
+            )}
           </div>
 
           <div style={{background:"#fff",borderRadius:16,padding:12,border:"1px solid #e2e8f0",marginBottom:12}}>
@@ -1863,9 +1870,9 @@ export default function PortfolioDashboard() {
           </div>
 
           {infoTab === "glossary" ? (
-            <GlossaryPanel histYrs={histYrs} varHorizonText={varHorizonText} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} />
+            <GlossaryPanel histYrs={histYrs} varHorizonText={varHorizonText} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} engineMode={res?.engineMode || engineMode} />
           ) : (
-            <ImplementationNotesPanel histYrs={histYrs} numSims={numSims} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} />
+            <ImplementationNotesPanel histYrs={histYrs} numSims={numSims} returnModel={res?.returnModel || returnModel} varMethod={res?.varMethod || varMethod} minVarVolCap={res?.minVarVolCap ?? minVarVolCap} rfRate={res?.rfRate ?? rfRate} engineMode={res?.engineMode || engineMode} />
           )}
 
           <div style={{background:"rgba(234,179,8,.06)",border:"1px solid rgba(234,179,8,.15)",borderRadius:12,padding:"10px 14px",marginBottom:20}}>
