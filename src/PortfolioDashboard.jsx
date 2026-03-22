@@ -1451,7 +1451,7 @@ export default function PortfolioDashboard() {
   const varHorizonText = `1-in-${varYearsLabel}-year`;
   const minVarPoint = res ? { x: +(res.minVar.vol * 100).toFixed(3), y: +(res.minVar.ret * 100).toFixed(3) } : null;
   const maxSharpePoint = res ? { x: +(res.maxSharpe.vol * 100).toFixed(3), y: +(res.maxSharpe.ret * 100).toFixed(3) } : null;
-  const trueMinVarPoint = res ? { x: +(res.trueMinVar.vol * 100).toFixed(3), y: +(res.trueMinVar.ret * 100).toFixed(3) } : null;
+  const trueMinVarPoint = res?.trueMinVar ? { x: +(res.trueMinVar.vol * 100).toFixed(3), y: +(res.trueMinVar.ret * 100).toFixed(3) } : null;
   const minVarOverlapsMaxSharpe = !!(minVarPoint && maxSharpePoint && minVarPoint.x === maxSharpePoint.x && minVarPoint.y === maxSharpePoint.y);
   const minVarChartPoint = minVarOverlapsMaxSharpe ? { x: +(minVarPoint.x - 0.08).toFixed(3), y: +(minVarPoint.y + 0.08).toFixed(3) } : minVarPoint;
   const maxSharpeChartPoint = minVarOverlapsMaxSharpe ? { x: +(maxSharpePoint.x + 0.08).toFixed(3), y: +(maxSharpePoint.y - 0.08).toFixed(3) } : maxSharpePoint;
