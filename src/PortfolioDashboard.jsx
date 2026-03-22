@@ -344,6 +344,24 @@ function calcRiskReward(a) {
   return Math.abs(reward / risk);
 }
 
+function slugifyFileName(value) {
+  return String(value || "portfolio")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "portfolio";
+}
+
+async function downloadWorkbook(filename, sheets) {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.utils.book_new();
+  sheets.forEach(({ name, rows }) => {
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, name.slice(0, 31));
+  });
+  XLSX.writeFile(workbook, `${slugifyFileName(filename)}.xlsx`);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTOR GUESS
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -769,6 +787,7 @@ function CorrelationMatrixTable({ tickers, corr, title }) {
 }
 
 function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
+  const [expanded, setExpanded] = useState(false);
   if (!cov || !tickers || tickers.length === 0) return null;
   const n = tickers.length;
   const allVals = [];
@@ -799,55 +818,73 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
 
   return (
     <div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",boxShadow:"0 8px 20px rgba(15,23,42,.05)",overflow:"hidden",marginBottom:16}}>
-      <div style={{padding:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",borderBottom:"1px solid #f1f5f9"}}>
+      <button
+        onClick={() => setExpanded((value) => !value)}
+        style={{width:"100%",padding:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",border:"none",borderBottom:expanded?"1px solid #f1f5f9":"none",background:"transparent",cursor:"pointer",textAlign:"left"}}
+      >
         <div>
           <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{title || "Variance-Covariance Matrix"}</h3>
-          <div style={{fontSize:13,color:"#64748b",marginTop:2}}>{n}x{n} annualized covariance matrix</div>
+          <div style={{fontSize:13,color:"#64748b",marginTop:2}}>{n}x{n} annualized covariance matrix and weighted variance contributions</div>
         </div>
-        <div style={{fontSize:13,color:"#64748b",textAlign:"right"}}>
-          <div>Range: {(minCov * 100).toFixed(2)}% to {(maxCov * 100).toFixed(2)}%</div>
-          <div>Avg var: {(avgVar * 100).toFixed(2)}%</div>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <div style={{fontSize:13,color:"#64748b",textAlign:"right"}}>
+            <div>Range: {(minCov * 100).toFixed(2)}% to {(maxCov * 100).toFixed(2)}%</div>
+            <div>Avg var: {(avgVar * 100).toFixed(2)}% · Port vol: {(portfolioVol * 100).toFixed(2)}%</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,color:"#475569",fontSize:13,fontWeight:700}}>
+            <span>{expanded ? "Hide matrices" : "Show matrices"}</span>
+            <span style={{display:"inline-block",transform:expanded?"rotate(180deg)":"rotate(0deg)",transition:"transform 0.2s ease"}}>▾</span>
+          </div>
         </div>
-      </div>
+      </button>
 
-      <div style={{padding:16}}>
-        <div style={{overflowX:"auto",overflowY:"auto",maxHeight:500,border:"1px solid #e2e8f0",borderRadius:10}}>
-          <table style={{borderCollapse:"collapse",fontSize:13,minWidth:`${(n + 1) * 72}px`}}>
-            <thead style={{position:"sticky",top:0,zIndex:5}}>
-              <tr>
-                <th style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",borderRight:"1px solid #e2e8f0",textAlign:"left",color:"#475569",fontWeight:700}}>Cov</th>
-                {tickers.map((t) => (
-                  <th key={t} style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",textAlign:"center",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {tickers.map((t, i) => (
-                <tr key={t}>
-                  <td style={{padding:"7px 10px",background:"#f8fafc",borderRight:"1px solid #e2e8f0",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</td>
-                  {tickers.map((_, j) => {
-                    const v = Number(cov[i]?.[j] ?? 0);
-                    return (
-                      <td key={`${i}-${j}`} style={{padding:"7px 10px",textAlign:"center",fontFamily:MO,borderBottom:"1px solid #f1f5f9",background:covCellBg(v),fontWeight:i===j?700:500,color:"#334155"}}>
-                        {(v * 100).toFixed(2)}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>
+      {!expanded && (
+        <div style={{padding:"0 16px 16px"}}>
           <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Min Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#1d4ed8"}}>{(minCov * 100).toFixed(4)}%</div></div>
-          <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Max Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#dc2626"}}>{(maxCov * 100).toFixed(4)}%</div></div>
-          <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Avg Var</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#334155"}}>{(avgVar * 100).toFixed(4)}%</div></div>
-          <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Port Vol</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#6366f1"}}>{(portfolioVol * 100).toFixed(2)}%</div></div>
+          <div style={{fontSize:12,color:"#64748b",marginTop:8}}>Expand to inspect the full covariance matrix and weighted contribution to portfolio variance for {activeLabel || "the active portfolio"}.</div>
         </div>
-      </div>
+      )}
 
-      {weights && (
+      {expanded && (
+        <div style={{padding:16}}>
+          <div style={{overflowX:"auto",overflowY:"auto",maxHeight:500,border:"1px solid #e2e8f0",borderRadius:10}}>
+            <table style={{borderCollapse:"collapse",fontSize:13,minWidth:`${(n + 1) * 72}px`}}>
+              <thead style={{position:"sticky",top:0,zIndex:5}}>
+                <tr>
+                  <th style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",borderRight:"1px solid #e2e8f0",textAlign:"left",color:"#475569",fontWeight:700}}>Cov</th>
+                  {tickers.map((t) => (
+                    <th key={t} style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",textAlign:"center",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tickers.map((t, i) => (
+                  <tr key={t}>
+                    <td style={{padding:"7px 10px",background:"#f8fafc",borderRight:"1px solid #e2e8f0",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</td>
+                    {tickers.map((_, j) => {
+                      const v = Number(cov[i]?.[j] ?? 0);
+                      return (
+                        <td key={`${i}-${j}`} style={{padding:"7px 10px",textAlign:"center",fontFamily:MO,borderBottom:"1px solid #f1f5f9",background:covCellBg(v),fontWeight:i===j?700:500,color:"#334155"}}>
+                          {(v * 100).toFixed(2)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>
+            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Min Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#1d4ed8"}}>{(minCov * 100).toFixed(4)}%</div></div>
+            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Max Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#dc2626"}}>{(maxCov * 100).toFixed(4)}%</div></div>
+            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Avg Var</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#334155"}}>{(avgVar * 100).toFixed(4)}%</div></div>
+            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Port Vol</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#6366f1"}}>{(portfolioVol * 100).toFixed(2)}%</div></div>
+          </div>
+        </div>
+      )}
+
+      {expanded && weights && (
         <div style={{padding:"0 16px 16px"}}>
           <div style={{fontSize:14,fontWeight:700,color:"#334155",marginBottom:8}}>
             Weighted Contribution to Portfolio Variance (w_i x w_j x sigma_ij)
@@ -906,7 +943,7 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
    LIVE ANALYSIS TABLE
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function LiveAnalysisTable({ title, tickers, weights, stocks, liveData, accentColor, loading }) {
+function LiveAnalysisTable({ title, tickers, weights, stocks, liveData, accentColor, loading, onDownloadXlsx }) {
   const [expanded, setExpanded] = useState(null);
 
   const items = useMemo(() =>
@@ -936,8 +973,18 @@ function LiveAnalysisTable({ title, tickers, weights, stocks, liveData, accentCo
           <div style={{width:4,height:18,borderRadius:2,background:accentColor}}/>
           <h3 style={{fontSize:14,fontWeight:700,color:"#1e293b",margin:0}}>{title}</h3>
         </div>
-        <div style={{fontSize:12,fontWeight:600,padding:"3px 8px",borderRadius:999,background:loading?"#dbeafe":hasData?"#dcfce7":"#f1f5f9",color:loading?"#1d4ed8":hasData?"#166534":"#64748b"}}>
-          {loading ? "Fetching..." : hasData ? "Live" : "Awaiting"}
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {onDownloadXlsx && (
+            <button
+              onClick={onDownloadXlsx}
+              style={{padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,fontWeight:700,cursor:"pointer",background:"#fff",color:"#334155"}}
+            >
+              Download XLSX
+            </button>
+          )}
+          <div style={{fontSize:12,fontWeight:600,padding:"3px 8px",borderRadius:999,background:loading?"#dbeafe":hasData?"#dcfce7":"#f1f5f9",color:loading?"#1d4ed8":hasData?"#166534":"#64748b"}}>
+            {loading ? "Fetching..." : hasData ? "Live" : "Awaiting"}
+          </div>
         </div>
       </div>
       <div style={{overflowX:"auto"}}>
@@ -1173,6 +1220,51 @@ export default function PortfolioDashboard() {
   const liveDataRef = useRef({});
 
   const tickers = useMemo(() => Object.keys(stocks), [stocks]);
+
+  const exportPortfolioXlsx = useCallback(async (title, portfolio, varData) => {
+    if (!portfolio || !portfolio.weights) return;
+    const rows = tickers.map((ticker, idx) => {
+      const stock = stocks[ticker] || {};
+      const live = liveData[ticker] || null;
+      const rr = live ? calcRiskReward(live) : null;
+      return {
+        ticker,
+        name: TICKER_NAMES[ticker] || stock.name || ticker,
+        sector: stock.sector || "",
+        weight_pct: +(((portfolio.weights[idx] || 0) * 100).toFixed(4)),
+        latest_price: live?.latestPrice ?? stock.price ?? null,
+        entry_price: live?.entryPrice ?? null,
+        target_price: live?.targetPrice ?? null,
+        rating: live?.rating ?? "",
+        upside_pct: live?.upside ?? null,
+        risk_reward: rr === Infinity ? "INF" : rr ?? null,
+        price_date: live?.priceDate ?? stock.date ?? "",
+        target_date: live?.targetDate ?? "",
+        rating_date: live?.ratingDate ?? "",
+      };
+    });
+
+    const summary = [
+      {
+        portfolio: title,
+        engine: res?.engineMode || engineMode,
+        return_model: res?.returnModel || returnModel,
+        var_method: res?.varMethod || varMethod,
+        risk_free_rate_pct: +(((res?.rfRate ?? rfRate) * 100).toFixed(2)),
+        vol_cap_pct: +(((res?.minVarVolCap ?? minVarVolCap) * 100).toFixed(2)),
+        expected_return_pct: +(portfolio.ret * 100).toFixed(4),
+        volatility_pct: +(portfolio.vol * 100).toFixed(4),
+        sharpe: +portfolio.sharpe.toFixed(6),
+        var_worst_loss_pct: varData?.worstLoss != null ? +(varData.worstLoss * 100).toFixed(4) : null,
+        hist_years: res?.histYrs ?? histYrs,
+      },
+    ];
+
+    await downloadWorkbook(title, [
+      { name: "Summary", rows: summary },
+      { name: "Holdings", rows },
+    ]);
+  }, [engineMode, histYrs, liveData, minVarVolCap, res, returnModel, rfRate, stocks, tickers, varMethod]);
 
   const addTicker = useCallback(() => {
     const t = input.toUpperCase().trim();
@@ -1747,15 +1839,15 @@ export default function PortfolioDashboard() {
           <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
             {isDeterministicMode ? (
               <>
-                <LiveAnalysisTable title="Deterministic Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching}/>
-                <LiveAnalysisTable title="Deterministic True Min Variance Live Analysis" tickers={tickers} weights={res.detTrueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching}/>
-                <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching}/>
+                <LiveAnalysisTable title="Deterministic Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("deterministic-min-variance-by-sharpe-live-analysis", res.minVar, minVarVaR)}/>
+                <LiveAnalysisTable title="Deterministic True Min Variance Live Analysis" tickers={tickers} weights={res.detTrueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#2563eb" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("deterministic-true-min-variance-live-analysis", res.detTrueMinVar, detTrueMinVarVaR)}/>
+                <LiveAnalysisTable title="Deterministic Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#ca8a04" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("deterministic-max-sharpe-live-analysis", res.maxSharpe, maxSharpeVaR)}/>
               </>
             ) : (
               <>
-                <LiveAnalysisTable title="Best Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching}/>
-                <LiveAnalysisTable title="True Min Variance Live Analysis" tickers={tickers} weights={res.trueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#22c55e" loading={fetching}/>
-                <LiveAnalysisTable title="Best Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#f59e0b" loading={fetching}/>
+                <LiveAnalysisTable title="Best Min Variance (by Sharpe) Live Analysis" tickers={tickers} weights={res.minVar.weights} stocks={stocks} liveData={liveData} accentColor="#10b981" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("best-min-variance-by-sharpe-live-analysis", res.minVar, minVarVaR)}/>
+                <LiveAnalysisTable title="True Min Variance Live Analysis" tickers={tickers} weights={res.trueMinVar.weights} stocks={stocks} liveData={liveData} accentColor="#22c55e" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("true-min-variance-live-analysis", res.trueMinVar, trueMinVarVaR)}/>
+                <LiveAnalysisTable title="Best Max Sharpe Live Analysis" tickers={tickers} weights={res.maxSharpe.weights} stocks={stocks} liveData={liveData} accentColor="#f59e0b" loading={fetching} onDownloadXlsx={() => exportPortfolioXlsx("best-max-sharpe-live-analysis", res.maxSharpe, maxSharpeVaR)}/>
               </>
             )}
           </div>
