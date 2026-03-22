@@ -1,8 +1,6 @@
-import React, { useState, useCallback, useMemo, useRef } from "react";
-import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer,
-} from "recharts";
+import React, { lazy, Suspense, useState, useCallback, useMemo, useRef } from "react";
+
+const EfficientFrontierChart = lazy(() => import("./EfficientFrontierChart.jsx"));
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TICKER NAME MAP — helps API disambiguate tickers with common abbreviations
@@ -1162,6 +1160,7 @@ export default function PortfolioDashboard() {
   const [fetchStatus, setFetchStatus] = useState(null);
   const [fetchError, setFetchError] = useState(null);
   const abortRef = useRef(null);
+  const liveDataRef = useRef({});
 
   const tickers = useMemo(() => Object.keys(stocks), [stocks]);
 
@@ -1177,7 +1176,12 @@ export default function PortfolioDashboard() {
   const removeTicker = useCallback((t) => {
     setStocks(prev => { const n = { ...prev }; delete n[t]; return n; });
     setRes(null);
-    setLiveData(prev => { const n = { ...prev }; delete n[t]; return n; });
+    setLiveData(prev => {
+      const n = { ...prev };
+      delete n[t];
+      liveDataRef.current = n;
+      return n;
+    });
   }, []);
 
   const doFetch = useCallback(async (tickerList) => {
@@ -1185,7 +1189,11 @@ export default function PortfolioDashboard() {
     setFetching(true); setFetchStatus('loading'); setFetchError(null); setFetchMsg('');
     try {
       const result = await fetchAllLiveData(tickerList, ac.signal, (ticker, data, loaded, total) => {
-        setLiveData(prev => ({ ...prev, [ticker]: data }));
+        setLiveData(prev => {
+          const next = { ...prev, [ticker]: data };
+          liveDataRef.current = next;
+          return next;
+        });
         setStocks(prev => {
           if (!prev[ticker]) return prev;
           return {
@@ -1218,7 +1226,7 @@ export default function PortfolioDashboard() {
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        setFetchStatus(Object.keys(liveData).length > 0 ? 'partial' : 'skipped');
+        setFetchStatus(Object.keys(liveDataRef.current).length > 0 ? 'partial' : 'skipped');
       } else {
         setFetchStatus('error');
         setFetchError(err?.message || 'Failed to fetch live data.');
@@ -1226,13 +1234,13 @@ export default function PortfolioDashboard() {
     } finally {
       setFetching(false);
     }
-  }, [liveData]);
+  }, []);
 
   const skip = useCallback(() => {
     abortRef.current?.abort();
     setFetching(false);
-    setFetchStatus(Object.keys(liveData).length > 0 ? 'partial' : 'skipped');
-  }, [liveData]);
+    setFetchStatus(Object.keys(liveDataRef.current).length > 0 ? 'partial' : 'skipped');
+  }, []);
 
   const runOptimize = useCallback(async () => {
     if (tickers.length < 2) return;
@@ -1287,11 +1295,6 @@ export default function PortfolioDashboard() {
 
   const portfolioTab = tab === "minVar" || tab === "trueMinVar" ? tab : "maxSharpe";
   const port = res ? (portfolioTab === "maxSharpe" ? res.maxSharpe : portfolioTab === "trueMinVar" ? res.trueMinVar : res.minVar) : null;
-  const rows = useMemo(() => {
-    if (!port) return [];
-    return tickers.map((t, i) => ({ ...stocks[t], w: port.weights[i] || 0 })).sort((a, b) => b.w - a.w);
-  }, [port, tickers, stocks]);
-
   const fmt = v => (v == null || isNaN(v)) ? "\u2014" : (v * 100).toFixed(2) + "%";
   const fN = v => (v == null || isNaN(v)) ? "\u2014" : v.toFixed(3);
   const minVarVaR = res?.varAnalysis?.minVar || null;
@@ -1308,8 +1311,6 @@ export default function PortfolioDashboard() {
   const minVarChartPoint = minVarOverlapsMaxSharpe ? { x: +(minVarPoint.x - 0.08).toFixed(3), y: +(minVarPoint.y + 0.08).toFixed(3) } : minVarPoint;
   const maxSharpeChartPoint = minVarOverlapsMaxSharpe ? { x: +(maxSharpePoint.x + 0.08).toFixed(3), y: +(maxSharpePoint.y - 0.08).toFixed(3) } : maxSharpePoint;
   const portfolioLabel = portfolioTab === "maxSharpe" ? "Best Max Sharpe" : portfolioTab === "trueMinVar" ? "True Min Variance" : "Best Min Variance (by Sharpe)";
-  const portfolioAccent = portfolioTab === "maxSharpe" ? "#f59e0b" : portfolioTab === "trueMinVar" ? "#22c55e" : "#10b981";
-
   return (
     <div style={{fontFamily:F,minHeight:"100vh",background:"linear-gradient(170deg,#080f1a 0%,#0f1a2e 40%,#0a1020 100%)",color:"#e2e8f0",padding:"28px 16px"}}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
@@ -1435,7 +1436,11 @@ export default function PortfolioDashboard() {
             <div style={{marginTop:16,padding:"14px 16px",background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12}}>
               <div style={{fontSize:13,fontWeight:600,color:"#94a3b8",marginBottom:8}}>{'\uD83D\uDCE1'} Live Market + Analyst Data</div>
               <div style={{display:"flex",gap:8,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
-                <button onClick={()=>{setLiveData({});doFetch(tickers);}} disabled={fetching||tickers.length===0}
+                <button onClick={() => {
+                  liveDataRef.current = {};
+                  setLiveData({});
+                  doFetch(tickers);
+                }} disabled={fetching||tickers.length===0}
                   style={{padding:"10px 20px",borderRadius:10,border:"none",fontWeight:700,fontSize:14,fontFamily:F,cursor:(fetching||tickers.length===0)?"not-allowed":"pointer",background:(fetching||tickers.length===0)?"#334155":"linear-gradient(135deg,#818cf8,#6366f1)",color:(fetching||tickers.length===0)?"#64748b":"#fff",boxShadow:(fetching||tickers.length===0)?"none":"0 3px 16px rgba(99,102,241,.3)",whiteSpace:"nowrap"}}>
                   {fetching ? <span style={{display:"flex",alignItems:"center",gap:6}}><span style={{display:"inline-block",width:12,height:12,border:"2px solid rgba(255,255,255,.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 1s linear infinite"}}/> Fetching...</span> : "\uD83D\uDCE1 Fetch Live Data"}</button>
                 {fetching && <button onClick={skip} style={{padding:"10px 16px",borderRadius:10,border:"1px solid rgba(255,255,255,.15)",fontWeight:600,fontSize:14,fontFamily:F,cursor:"pointer",background:"transparent",color:"#94a3b8"}}>Skip</button>}
@@ -1562,19 +1567,14 @@ export default function PortfolioDashboard() {
 
           <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
             <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 14px"}}>Efficient Frontier</h3>
-            <ResponsiveContainer width="100%" height={310}>
-              <ScatterChart margin={{ top: 36, right: 20, bottom: 56, left: 50 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0"/>
-                <XAxis dataKey="x" type="number" name="Vol" unit="%" domain={["auto","auto"]} tick={{fontSize:11,fill:"#64748b"}} label={{value:"Volatility (%)",position:"bottom",offset:18,fontSize:12,fill:"#64748b"}}/>
-                <YAxis dataKey="y" type="number" name="Ret" unit="%" domain={["auto","auto"]} tick={{fontSize:11,fill:"#64748b"}} label={{value:"Return (%)",angle:-90,position:"insideLeft",fontSize:12,fill:"#64748b"}}/>
-                <Tooltip formatter={v=>Number(v).toFixed(2)+"%"} contentStyle={{fontSize:12,borderRadius:8,border:"1px solid #e2e8f0"}}/>
-                <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:12,top:0,right:8}}/>
-                <Scatter name="Random" data={res.frontier} fill="#cbd5e1" fillOpacity={0.35}/>
-                <Scatter name="Best Min Variance (by Sharpe)" data={minVarChartPoint ? [minVarChartPoint] : []} fill="#10b981" shape="diamond" stroke="#065f46" strokeWidth={2}/>
-                <Scatter name="Best Max Sharpe" data={maxSharpeChartPoint ? [maxSharpeChartPoint] : []} fill="#f59e0b" shape="star" stroke="#92400e" strokeWidth={2}/>
-                <Scatter name="True Min Variance" data={trueMinVarPoint ? [trueMinVarPoint] : []} fill="#3b82f6" shape="circle" stroke="#1e40af" strokeWidth={2}/>
-              </ScatterChart>
-            </ResponsiveContainer>
+            <Suspense fallback={<div style={{height:310,display:"grid",placeItems:"center",color:"#64748b",fontSize:14}}>Loading frontier chart...</div>}>
+              <EfficientFrontierChart
+                frontier={res.frontier}
+                minVarChartPoint={minVarChartPoint}
+                maxSharpeChartPoint={maxSharpeChartPoint}
+                trueMinVarPoint={trueMinVarPoint}
+              />
+            </Suspense>
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"1fr",gap:16,marginBottom:20}}>
