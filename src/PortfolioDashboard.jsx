@@ -1525,26 +1525,53 @@ export default function PortfolioDashboard() {
             </div>
           </div>
 
-          <div style={{marginBottom:16}}>
-            <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
-              <span>Min Variance Sharpe Vol Cap</span>
-              <span style={{fontFamily:MO,color:"#10b981",fontSize:13,fontWeight:700}}>{(minVarVolCap * 100).toFixed(1)}%</span>
-            </label>
-            <input type="range" min={5} max={40} step={0.5} value={minVarVolCap * 100}
-              onChange={e=>setMinVarVolCap(Number(e.target.value) / 100)}
-              style={{width:"100%",accentColor:"#10b981"}} disabled={busy}/>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#475569",marginTop:2}}><span>5%</span><span>22.5%</span><span>40%</span></div>
-          </div>
-
-          <div style={{marginBottom:16}}>
-            <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
-              <span>Risk-Free Rate</span>
-              <span style={{fontFamily:MO,color:"#f59e0b",fontSize:13,fontWeight:700}}>{(rfRate * 100).toFixed(1)}%</span>
-            </label>
-            <input type="range" min={0} max={10} step={0.1} value={rfRate * 100}
-              onChange={e=>setRfRate(Number(e.target.value) / 100)}
-              style={{width:"100%",accentColor:"#f59e0b"}} disabled={busy}/>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#475569",marginTop:2}}><span>0%</span><span>5%</span><span>10%</span></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+            <div>
+              <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
+                <span>Min Variance Sharpe Vol Cap</span>
+                <span style={{fontFamily:MO,color:"#10b981",fontSize:13,fontWeight:700}}>{(minVarVolCap * 100).toFixed(1)}%</span>
+              </label>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input
+                  type="number"
+                  min={5}
+                  max={40}
+                  step={0.5}
+                  value={(minVarVolCap * 100).toFixed(1)}
+                  onChange={e => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next)) setMinVarVolCap(Math.max(0.05, Math.min(0.4, next / 100)));
+                  }}
+                  style={{flex:1,padding:"11px 14px",fontFamily:MO,fontSize:14,fontWeight:600,background:"rgba(255,255,255,.06)",border:"1px solid rgba(16,185,129,.25)",borderRadius:10,color:"#f1f5f9",outline:"none"}}
+                  disabled={busy}
+                />
+                <span style={{fontSize:13,color:"#94a3b8",fontWeight:700}}>%</span>
+              </div>
+              <div style={{fontSize:12,color:"#64748b",marginTop:5}}>Hard cap used by Monte Carlo min-variance-by-Sharpe selection. Range 5.0% to 40.0%.</div>
+            </div>
+            <div>
+              <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13,color:"#94a3b8",marginBottom:6,fontWeight:600}}>
+                <span>Risk-Free Rate</span>
+                <span style={{fontFamily:MO,color:"#f59e0b",fontSize:13,fontWeight:700}}>{(rfRate * 100).toFixed(1)}%</span>
+              </label>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={(rfRate * 100).toFixed(1)}
+                  onChange={e => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next)) setRfRate(Math.max(0, Math.min(0.1, next / 100)));
+                  }}
+                  style={{flex:1,padding:"11px 14px",fontFamily:MO,fontSize:14,fontWeight:600,background:"rgba(255,255,255,.06)",border:"1px solid rgba(245,158,11,.25)",borderRadius:10,color:"#f1f5f9",outline:"none"}}
+                  disabled={busy}
+                />
+                <span style={{fontSize:13,color:"#94a3b8",fontWeight:700}}>%</span>
+              </div>
+              <div style={{fontSize:12,color:"#64748b",marginTop:5}}>Used in all Sharpe calculations for both Monte Carlo and deterministic engines. Range 0.0% to 10.0%.</div>
+            </div>
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
@@ -1714,6 +1741,46 @@ export default function PortfolioDashboard() {
           <div style={{fontSize:11,color:"#64748b",marginBottom:20}}>
             Note: "Best Min Variance (by Sharpe)" is the highest-Sharpe portfolio that satisfies the volatility cap. "True Min Variance" is the absolute lowest-volatility portfolio.
           </div>
+
+          {res.deterministic && (
+            <div style={{background:"#fff",borderRadius:16,padding:20,marginBottom:20,border:"1px solid #e2e8f0",boxShadow:"0 10px 24px rgba(15,23,42,.06)"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
+                <div>
+                  <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 4px"}}>Engine Comparison</h3>
+                  <div style={{fontSize:12,color:"#64748b"}}>Monte Carlo remains active. Deterministic portfolios are computed in parallel and shown separately below.</div>
+                </div>
+                <div style={{fontSize:12,fontWeight:700,color:"#475569",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:999,padding:"5px 10px"}}>
+                  {res.deterministic.minVar.method}
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12}}>
+                <div style={{background:"linear-gradient(135deg,#ecfdf5,#dcfce7)",border:"1px solid #a7f3d0",borderRadius:14,padding:"14px 16px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#166534",marginBottom:6}}>Monte Carlo Min Var by Sharpe</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#166534"}}>{fmt(res.minVar.ret)} return</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#166534"}}>{fmt(res.minVar.vol)} vol</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#166534"}}>{fN(res.minVar.sharpe)} Sharpe</div>
+                </div>
+                <div style={{background:"linear-gradient(135deg,#eff6ff,#dbeafe)",border:"1px solid #bfdbfe",borderRadius:14,padding:"14px 16px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#1d4ed8",marginBottom:6}}>Deterministic Min Variance</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fmt(res.deterministic.minVar.ret)} return</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fmt(res.deterministic.minVar.vol)} vol</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#1d4ed8"}}>{fN(res.deterministic.minVar.sharpe)} Sharpe</div>
+                </div>
+                <div style={{background:"linear-gradient(135deg,#fff7ed,#ffedd5)",border:"1px solid #fdba74",borderRadius:14,padding:"14px 16px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#c2410c",marginBottom:6}}>Monte Carlo Max Sharpe</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#c2410c"}}>{fmt(res.maxSharpe.ret)} return</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#c2410c"}}>{fmt(res.maxSharpe.vol)} vol</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#c2410c"}}>{fN(res.maxSharpe.sharpe)} Sharpe</div>
+                </div>
+                <div style={{background:"linear-gradient(135deg,#fefce8,#fde68a)",border:"1px solid #fcd34d",borderRadius:14,padding:"14px 16px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#a16207",marginBottom:6}}>Deterministic Max Sharpe</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#a16207"}}>{fmt(res.deterministic.maxSharpe.ret)} return</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#a16207"}}>{fmt(res.deterministic.maxSharpe.vol)} vol</div>
+                  <div style={{fontFamily:MO,fontSize:13,color:"#a16207"}}>{fN(res.deterministic.maxSharpe.sharpe)} Sharpe</div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {res.deterministic && (
             <>
