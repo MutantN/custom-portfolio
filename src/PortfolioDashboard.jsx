@@ -790,20 +790,8 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
   const [expanded, setExpanded] = useState(false);
   if (!cov || !tickers || tickers.length === 0) return null;
   const n = tickers.length;
-  const allVals = [];
-  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) allVals.push(Number(cov[i]?.[j] ?? 0));
-  const minCov = Math.min(...allVals);
-  const maxCov = Math.max(...allVals);
   const diag = tickers.map((_, i) => Number(cov[i]?.[i] ?? 0));
   const avgVar = diag.length ? diag.reduce((s, v) => s + v, 0) / diag.length : 0;
-  const range = maxCov - minCov || 1;
-  const covCellBg = (v) => {
-    const t = (v - minCov) / range;
-    const r = Math.round(t < 0.5 ? 220 + (255 - 220) * (t / 0.5) : 255 - (255 - 239) * ((t - 0.5) / 0.5));
-    const g = Math.round(t < 0.5 ? 230 + (255 - 230) * (t / 0.5) : 255 - (255 - 200) * ((t - 0.5) / 0.5));
-    const b = Math.round(t < 0.5 ? 255 : 255 - (255 - 200) * ((t - 0.5) / 0.5));
-    return `rgb(${r},${g},${b})`;
-  };
 
   let portfolioVariance = 0;
   const contributions = Array.from({ length: n }, () => Array(n).fill(0));
@@ -823,13 +811,13 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
         style={{width:"100%",padding:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",border:"none",borderBottom:expanded?"1px solid #f1f5f9":"none",background:"transparent",cursor:"pointer",textAlign:"left"}}
       >
         <div>
-          <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{title || "Variance-Covariance Matrix"}</h3>
-          <div style={{fontSize:13,color:"#64748b",marginTop:2}}>{n}x{n} annualized covariance matrix and weighted variance contributions</div>
+          <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:0}}>{title || "Portfolio Variance Contribution Matrix"}</h3>
+          <div style={{fontSize:13,color:"#64748b",marginTop:2}}>{n}x{n} weighted contribution to portfolio variance</div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
           <div style={{fontSize:13,color:"#64748b",textAlign:"right"}}>
-            <div>Range: {(minCov * 100).toFixed(2)}% to {(maxCov * 100).toFixed(2)}%</div>
-            <div>Avg var: {(avgVar * 100).toFixed(2)}% · Port vol: {(portfolioVol * 100).toFixed(2)}%</div>
+            <div>Avg asset var: {(avgVar * 100).toFixed(2)}%</div>
+            <div>Port vol: {(portfolioVol * 100).toFixed(2)}%</div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8,color:"#475569",fontSize:13,fontWeight:700}}>
             <span>{expanded ? "Hide matrices" : "Show matrices"}</span>
@@ -840,47 +828,7 @@ function CovarianceMatrixTable({ tickers, cov, weights, title, activeLabel }) {
 
       {!expanded && (
         <div style={{padding:"0 16px 16px"}}>
-          <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Min Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#1d4ed8"}}>{(minCov * 100).toFixed(4)}%</div></div>
-          <div style={{fontSize:12,color:"#64748b",marginTop:8}}>Expand to inspect the full covariance matrix and weighted contribution to portfolio variance for {activeLabel || "the active portfolio"}.</div>
-        </div>
-      )}
-
-      {expanded && (
-        <div style={{padding:16}}>
-          <div style={{overflowX:"auto",overflowY:"auto",maxHeight:500,border:"1px solid #e2e8f0",borderRadius:10}}>
-            <table style={{borderCollapse:"collapse",fontSize:13,minWidth:`${(n + 1) * 72}px`}}>
-              <thead style={{position:"sticky",top:0,zIndex:5}}>
-                <tr>
-                  <th style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",borderRight:"1px solid #e2e8f0",textAlign:"left",color:"#475569",fontWeight:700}}>Cov</th>
-                  {tickers.map((t) => (
-                    <th key={t} style={{padding:"8px 10px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",textAlign:"center",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {tickers.map((t, i) => (
-                  <tr key={t}>
-                    <td style={{padding:"7px 10px",background:"#f8fafc",borderRight:"1px solid #e2e8f0",color:"#475569",fontWeight:700,fontFamily:MO}}>{t}</td>
-                    {tickers.map((_, j) => {
-                      const v = Number(cov[i]?.[j] ?? 0);
-                      return (
-                        <td key={`${i}-${j}`} style={{padding:"7px 10px",textAlign:"center",fontFamily:MO,borderBottom:"1px solid #f1f5f9",background:covCellBg(v),fontWeight:i===j?700:500,color:"#334155"}}>
-                          {(v * 100).toFixed(2)}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>
-            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Min Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#1d4ed8"}}>{(minCov * 100).toFixed(4)}%</div></div>
-            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Max Cov</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#dc2626"}}>{(maxCov * 100).toFixed(4)}%</div></div>
-            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Avg Var</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#334155"}}>{(avgVar * 100).toFixed(4)}%</div></div>
-            <div style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px",textAlign:"center"}}><div style={{fontSize:12,color:"#64748b"}}>Port Vol</div><div style={{fontSize:14,fontFamily:MO,fontWeight:700,color:"#6366f1"}}>{(portfolioVol * 100).toFixed(2)}%</div></div>
-          </div>
+          <div style={{fontSize:12,color:"#64748b",marginTop:8}}>Expand to inspect the weighted contribution to portfolio variance for {activeLabel || "the active portfolio"}.</div>
         </div>
       )}
 
